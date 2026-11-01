@@ -39,10 +39,12 @@ capabilities:
     cmd: "cd ~/projects/scraper && python3 crawl.py --out $PAD_WORK_DIR/data.json"
     timeout_min: 120
 
-  # 自检：名字也带前缀，因为"我这台还活着"是这台的专属信息
+  # 自检：名字也带前缀，因为"我这台还活着"是这台的专属信息。
+  # 用 run_script.py 包一层：它会把 stdout、退出码收成标准 result.json
+  # （含逐条验收证据）。直接 echo 也行，但那样服务端会标"验收未回答"。
   NODE-1.ping.self:
     desc: "连通性自检"
-    cmd: "echo \"pong from $(hostname -s) at $(date +%H:%M)\""
+    cmd: "python3 /opt/pad-ld/harness/run_script.py 'echo \"pong from $(hostname -s)\"'"
     timeout_min: 1
 
 # ${PAD_KEY} 会从环境变量或 ~/.pad_key 自动替换。
