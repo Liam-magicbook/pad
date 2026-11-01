@@ -1,20 +1,25 @@
 # PAD
 
 **把你的机器接成一个能被 ChatGPT / Claude 指挥的执行集群。**
+一个进程，一个 SQLite，两扇门——模型无状态，状态全在 PAD。
 
-一个进程，一个 SQLite，两扇门：
+<img src="docs/preview/hero.gif" width="880" alt="四格动图：一键起步 / 舰队态势 / MCP 工具面 / 任务报告">
+
+<sub>四格都是真实运行的截帧：左上 `./quickstart.sh` 逐行点亮、右上 `padctl digest`、左下 MCP 工具面、右下任务报告。由 `docs/make_preview.py` 从本机真实输出生成，不是设计稿。</sub>
+
+**论文**：[`paper/pad.pdf`](paper/pad.pdf) —— 6 台机器、938 个真实任务、835 机时的实证报告（ICML 排版）。
+
+---
 
 ```
 /pad/<KEY>/mcp        给脑（ChatGPT / Claude）—— 9 个任务管理与报告读取工具
 /pad/<KEY>/api/...    给每台机器的 LD agent —— 注册 / 领活 / 进度与最终报告
 ```
 
-核心一句话：**模型无状态，PAD 有状态。**
-
 模型不需要记得昨天干了什么、哪台机器在跑什么、任务卡在哪一步 —— 这些它记不住，也不该记。
 PAD 把它们放进 SQLite，模型每次只问一句"现在什么情况"，拿到一份摘要，继续往下指挥。
 
-![PAD 是什么](docs/img/flow.png)
+![PAD 是什么](docs/preview/architecture.jpg)
 
 ## 一键起步
 
@@ -26,7 +31,7 @@ git clone https://github.com/Liam-magicbook/pad.git && cd pad
 三分钟以内，它会：建虚拟环境 → 装依赖 → 生成密钥 → 起服务端 → 起一台本地节点
 → 打一个真任务 → 把任务报告打给你看。
 
-![一键起步](docs/img/quickstart.png)
+![一键起步](docs/preview/quickstart.jpg)
 
 跑完你会拿到一个 MCP 地址，填进 ChatGPT 就能用了（见 [接进大脑](#接进大脑)）。
 停掉：`./quickstart.sh --stop`。
@@ -56,7 +61,7 @@ git clone https://github.com/Liam-magicbook/pad.git && cd pad
 然后它派活到 `scrape.batch`，因为 `vps-1` 正好空着 —— 而**它从来不需要知道机器名**。
 机器挂了、换机器、加机器，模型侧一行都不用改。
 
-![digest](docs/img/digest.png)
+![digest](docs/preview/digest.jpg)
 
 ## 接进大脑
 
@@ -73,7 +78,7 @@ probe_file_upload(files)             文件通路自检
 get_artifact_delivery / observe      产物直链与抽帧（可选扩展）
 ```
 
-![MCP 工具面](docs/img/mcp.png)
+![MCP 工具面](docs/preview/mcp.jpg)
 
 **ChatGPT**：Settings → Connectors（Developer mode）→ Create → MCP Server URL 填
 `http://<你的主机>:8790/pad/<KEY>/mcp` → Scan tools → 确认出现上面这些工具。
@@ -258,7 +263,9 @@ CSV/JSON/Markdown、压缩包、音视频、字幕。
 | `contract.md` | 契约：下发基准、汇报格式、执行纪律 |
 | `JOIN.md` | 新机器接入协议 + 自查清单 + 排坑表 |
 | `CHANGELOG.md` | 改完之后行为不一样的事，排查先看这里 |
-| `docs/make_demo_images.py` | 重新生成上面这些演示图 |
+| `docs/make_preview.py` | 重新生成首屏动图（真实输出 → 逐帧截图 → ffmpeg） |
+| `paper/` | 系统报告（ICML 排版，`pad.pdf`）+ 只含聚合的实测数据 |
+| `tools/collect_stats.py` | 从线上 PAD 抓任务详情，复现论文里的数字 |
 
 ## 开发
 
@@ -271,8 +278,34 @@ bash tests/e2e_input_files.sh                       # 端到端：起临时服�
 
 ```bash
 ./quickstart.sh          # 先有一个跑着的本地 PAD
-.venv/bin/python docs/make_demo_images.py
+.venv/bin/python docs/make_preview.py
 ```
+
+## 论文
+
+`paper/pad.pdf`（ICML 2025 排版，9 页）把上面这些设计写成了可引用的系统报告：
+问题定义、与 harness / long-horizon / delegation 三支工作的关系、架构、以及实测。
+
+```bash
+cd paper && latexmk -pdf pad.tex
+```
+
+实测部分用的是这套系统在生产环境跑了两个月之后的真实日志：
+
+| 指标 | 数值 |
+|---|---|
+| 节点 / 能力 | 6 台机器、20 个能力、3 个厂商的 agent CLI |
+| 真实任务（不含自检） | 938 个，835 机时 |
+| 长任务占比 | 18.7% 超过 1 小时，25 个超过 6 小时，最长 42 小时 |
+| 完成任务的逐条验收证据 | 93% |
+| 失败任务仍交结构化报告 | 42% |
+| 失败主因 | 64/132 是执行体环境问题（不是模型不会做） |
+
+最后一行是整套设计最想说明的事：**大部分失败发生在环境里，不在推理里**。单环 harness 看到的是
+"工具调用挂了"，PAD 看到的是"这台机器的这个能力一直挂"，后者才是能修的那个。
+
+数据与复现脚本在 `paper/data/aggregates.json` 和 `tools/collect_stats.py`。
+原始抓取含 operator 的真实 goal 文本，不进仓库。
 
 ## 已知缺口
 

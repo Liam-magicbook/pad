@@ -1,5 +1,5 @@
 # ---- 运行时数据：绝不进仓库 ----
-data/
+/data/
 *.db
 *.db-wal
 *.db-shm
@@ -48,4 +48,23 @@ dist/
 .tmp/
 
 # 演示图脚本的兜底产物（没装 webshot 时会留下 HTML）
-docs/img/*.html
+docs/preview/*.html
+
+# ---- 论文：原始抓取含 operator 的真实 goal 文本与任务 id，只提交聚合 ----
+paper/data/tasks.json
+!paper/data/aggregates.json
+
+# LaTeX 中间产物
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.bcf
+paper/*.run.xml
+paper/*.synctex.gz
+
+# 演示图脚本的中间产物
+docs/preview/.scene-*.html
