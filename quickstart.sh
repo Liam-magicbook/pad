@@ -92,7 +92,7 @@ workspace: $DATA/workspace
 capabilities:
   demo.echo:
     desc: "自检：回一句 pong，证明注册/领活/报告三段都通"
-    cmd: "echo \\"pong from \$(hostname -s) at \$(date +%H:%M)\\""
+    cmd: "${ROOT}/.venv/bin/python ${ROOT}/harness/run_script.py 'echo \\"pong from \$(hostname -s) at \$(date +%H:%M)\\"'"
     timeout_min: 1
 
   local.run:
