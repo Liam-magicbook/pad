@@ -46,3 +46,6 @@ dist/
 .vscode/
 *.swp
 .tmp/
+
+# 演示图脚本的兜底产物（没装 webshot 时会留下 HTML）
+docs/img/*.html

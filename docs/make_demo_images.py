@@ -5,7 +5,9 @@
 
     .venv/bin/python docs/make_demo_images.py
 
-依赖：tools/webshot/webshot.py（真 Chrome 渲染）+ 一个跑着的本地 PAD（默认 8790）。
+依赖：真 Chrome 渲染。默认用仓库外的 `tools/webshot/webshot.py`（我的通用截图工具），
+没有就用 WEBSHOT=/path/to/webshot.py 指一个，缺了会把 HTML 留在 docs/img/ 待手截。
+还需要一个跑着的本地 PAD（默认 8790，可用 PORT= 换）。
 """
 import html
 import json
@@ -17,7 +19,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-WS = ROOT.parent / "tools" / "webshot" / "webshot.py"
+WS = Path(os.environ.get("WEBSHOT", ROOT.parent / "tools" / "webshot" / "webshot.py"))
 WS_PY = os.environ.get("WEBSHOT_PYTHON") or "python3"   # webshot 要 websocket-client，用系统 python 更稳
 OUT = HERE / "img"
 PORT = os.environ.get("PORT", "8790")
@@ -52,7 +54,11 @@ h1 { font: 600 15px/1.4 -apple-system, "Segoe UI", sans-serif; color: #f0f6fc;
 
 
 def render(name: str, title: str, lines: str, width: int = 900) -> Path:
-    """lines 已经带好 span 标记；写成 HTML 再交给 webshot 截图。"""
+    """lines 已经带好 span 标记；写成 HTML 再交给 webshot 截图。
+
+    没有 webshot 时不报错 —— 把 HTML 留在 docs/img/<name>.html，
+    自己用浏览器打开截一张就行（图里的内容一样，只是少了自动化）。
+    """
     page = HERE / f".demo-{name}.html"
     page.write_text(f"""<!doctype html><html><head><meta charset="utf-8">
 <style>{CSS}</style></head><body>
@@ -68,8 +74,13 @@ def render(name: str, title: str, lines: str, width: int = 900) -> Path:
     <div class="body">{lines}</div>
   </div>
 </div></body></html>""")
-    out = OUT / f"{name}.png"
     OUT.mkdir(parents=True, exist_ok=True)
+    out = OUT / f"{name}.png"
+    if not WS.exists():
+        kept = OUT / f"{name}.html"
+        page.replace(kept)
+        print(f"{kept.relative_to(ROOT)}  ← 没有 {WS}，HTML 留着待手截")
+        return kept
     subprocess.run([WS_PY, str(WS), "--url", page.as_uri(), "--out", str(out),
                     "--selector", "body", "--width", str(width + 60), "--height", "1200",
                     "--scale", "2", "--pad", "0", "--wait", "1"],
