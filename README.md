@@ -283,12 +283,9 @@ bash tests/e2e_input_files.sh                       # 端到端：起临时服�
 
 ## 论文
 
-`paper/pad.pdf`（ICML 2025 排版，9 页）把上面这些设计写成了可引用的系统报告：
+`paper/pad.pdf`（ICML 2025 排版，8 页）把上面这些设计写成了可引用的系统报告：
 问题定义、与 harness / long-horizon / delegation 三支工作的关系、架构、以及实测。
-
-```bash
-cd paper && latexmk -pdf pad.tex
-```
+仓库里只发布成品 PDF，LaTeX 源码本地保留。
 
 实测部分用的是这套系统在生产环境跑了两个月之后的真实日志：
 

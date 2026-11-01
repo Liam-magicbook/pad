@@ -68,3 +68,10 @@ paper/*.synctex.gz
 
 # 演示图脚本的中间产物
 docs/preview/.scene-*.html
+
+# ---- 论文源码不进仓库（只发布 pad.pdf + 聚合数据）----
+paper/*.tex
+paper/*.bib
+paper/*.bbl
+paper/*.sty
+paper/*.bst
