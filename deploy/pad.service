@@ -1,0 +1,15 @@
+[Unit]
+Description=PAD (task/state hub)
+After=network.target
+
+[Service]
+Type=simple
+User=pad
+WorkingDirectory=/opt/pad
+EnvironmentFile=/opt/pad/pad.env
+ExecStart=/opt/pad/venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8790 --log-level info
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

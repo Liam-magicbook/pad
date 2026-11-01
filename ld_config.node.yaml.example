@@ -1,0 +1,52 @@
+# 节点配置样例 —— 复制成 ld_config.yaml 改三处就能跑：
+#   node_id / capabilities / pad_url
+#
+# 命名约定（详见 JOIN.md 第二节）：
+#   带机器名前缀 = 这台专属，别的机器不要声明     → gpu-1.build
+#   不带前缀     = 描述"干什么"，谁都能声明，代表愿意分担 → scrape.batch
+#
+# 声明前先问：两台同时干这件事会互相踩吗？会 → 只有一台能声明。
+#
+# 并发（concurrency，默认 1=串行）：
+#   同一个 node 现在可以同时跑多个任务。给某个 capability 加 concurrency: N，
+#   就有 N 个槽位；LD 会一直领活把槽填满（每个任务各起一个独立执行体进程）。
+#   只有确定"这些活并行不会互相踩"才加：要账号登录态、要写同一份文件、
+#   要抢同一资源的（如整套 daily 流水线），保持 1。
+
+node_id: CHANGE_ME            # 如 gpu-1 / vps-1，全局唯一
+role: compute                 # compute / publisher / 其它自定义
+description: "一句话说清这台机器干嘛。要写明有没有账号登录态。"
+workspace: ~/pad-workspace    # agent 类任务的工作根目录（会自动往下下发为 PAD_WORKSPACE）
+
+capabilities:
+
+  # 例①：确定性活，直接调脚本（脚本自己写 stdout，或最后再接一句 tail）
+  # publish.blog:
+  #   desc: "发博客"
+  #   cmd: "cd ~/projects/blog && bash publish.sh"
+  #   timeout_min: 120
+
+  # 例②：需要判断的活，交给本机 agent 无头跑（专属活，名字带机器前缀）
+  gpu-1.build:
+    desc: "跑重型代码任务"
+    cmd: "python3 /opt/pad-ld/harness/run_harness.py opencode"
+    timeout_min: 240
+    concurrency: 2        # 同机最多同时跑 2 个；默认 1=串行。只对"确认并行不会互相踩"的活开
+
+  # 例③：抓数据
+  scrape.batch:
+    desc: "批量抓数据，只读，不改任何东西"
+    cmd: "cd ~/projects/scraper && python3 crawl.py --out $PAD_WORK_DIR/data.json"
+    timeout_min: 120
+
+  # 自检：名字也带前缀，因为"我这台还活着"是这台的专属信息
+  NODE-1.ping.self:
+    desc: "连通性自检"
+    cmd: "echo \"pong from $(hostname -s) at $(date +%H:%M)\""
+    timeout_min: 1
+
+# ${PAD_KEY} 会从环境变量或 ~/.pad_key 自动替换。
+# 把 host 换成你自己的 PAD 地址（本地就是 http://127.0.0.1:8790）。
+pad_url: "http://127.0.0.1:8790/pad/${PAD_KEY}"
+poll_sec: 20
+work_dir: "~/pad-work"        # 任务工作目录；执行体只在这里写东西

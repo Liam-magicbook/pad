@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- macOS 常驻。改三处：__PAD_HOME__ 换成 PAD 目录绝对路径、__PYTHON__ 换成 venv 里的 python、
+     配置名换成你自己的。然后：
+       cp deploy/com.pad.ld.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.pad.ld.plist -->
+<dict>
+  <key>Label</key>
+  <string>com.pad.ld</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>-u</string>
+    <string>__PAD_HOME__/ld_agent.py</string>
+    <string>__PAD_HOME__/ld_config.yaml</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:__HOME__/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__PAD_HOME__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>__PAD_HOME__/logs/ld.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PAD_HOME__/logs/ld.err</string>
+</dict>
+</plist>
