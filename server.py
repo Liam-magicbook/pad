@@ -3,7 +3,7 @@
   /pad/<KEY>/mcp            MCP (for the brain / ChatGPT)
   /pad/<KEY>/api/...        REST (for the LD agent on each machine)
 
-The brain only ever sees 5 coarse tools. It has no shell, no machine id, no repo.
+The brain only ever sees 9 task tools. It has no shell, no machine id, no repo.
 """
 import base64
 import binascii
