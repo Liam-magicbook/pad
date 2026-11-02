@@ -333,7 +333,7 @@ Never rename conflicting capabilities simply to bypass contention limits. The hu
 
 ## Design principles: what failure each choice prevents
 
-Mechanisms and formal models are detailed in Section 3 of the paper; these principles govern system design choices:
+Each of these principles exists because a specific failure was actually observed:
 
 - **State must outlive the process that produced it.** Both context windows and executor processes eventually terminate. Treating context windows as permanent storage introduces truncation errors without providing indexing, schema validation, or multi-node access. Durable facts reside in an append-only SQLite database backed by a single persistent server process.
 - **The interface must be narrower than the capability.** Expanding tool interfaces inflates prompt overhead and increases combinatorial failure modes. PAD restricts the brain to nine task management primitives, delegating all environment actions—shells, filesystem modifications, browsers, and network calls—to node-level executors.
@@ -409,8 +409,7 @@ Because attachment `download_url` tokens are short-lived, PAD ingests files sync
 | `JOIN.md` | Node join protocol + self-checks + trap list |
 | `CHANGELOG.md` | Behavior changes; check here first when debugging |
 | `docs/make_preview.py` | Regenerate the hero GIF (real output → frames → ffmpeg) |
-| `paper/` | System report (`pad.pdf`, ICML Template) + aggregate-only measurements |
-| `tools/collect_stats.py` | Pull task details from a live PAD to reproduce the paper's numbers |
+| `tools/collect_stats.py` | Pull task details from a live PAD to reproduce the numbers below |
 | `README.{zh,fr,ja,ru}.md` | Chinese / French / Japanese / Russian versions |
 
 ## Development
@@ -429,11 +428,9 @@ Preview graphics are generated directly from live system executions rather than 
 .venv/bin/python docs/make_preview.py
 ```
 
-## Paper
+## Measured
 
-A comprehensive systems report is available in `paper/pad.pdf` (typeset in the ICML Template, comprising 8 pages of body text and 5 pages of appendices). The paper details problem formalization, analyzes relationships with modern harness architectures, long-horizon agents, and delegation frameworks, and documents design trade-offs alongside empirical evaluations. Appendices include the full SQLite schema, task state machine definitions, specifications for all nine tool endpoints, and reproduction workflows.
-
-Empirical evaluations stem from two months of production logs on live infrastructure:
+Two months of production logs on live infrastructure:
 
 | Metric | Value |
 |---|---|
@@ -444,9 +441,9 @@ Empirical evaluations stem from two months of production logs on live infrastruc
 | Failed tasks still delivering a structured report | 42% |
 | Dominant failure cause | 64/132 are executor-environment faults (not the model failing) |
 
-The empirical findings reinforce a central design thesis: **the majority of long-horizon agent failures arise from execution environment faults rather than model reasoning breakdowns.** Single-loop harnesses typically register these issues as generic tool call errors. PAD's decoupled architecture surfaces the precise failure mode at the capability and machine level, allowing targeted environmental remediation.
+That last line is the whole design argument: **most long-horizon failures happen in the environment, not in the reasoning.** A single-loop harness registers them as a generic tool-call error. PAD sees "this capability on this machine is broken", which is the version you can actually fix.
 
-Aggregated data and reproduction scripts reside in `paper/data/aggregates.json` and `tools/collect_stats.py`. Raw execution logs contain sensitive operational context and are excluded from the repository.
+`tools/collect_stats.py` pulls task details from a running PAD and reproduces every number above.
 
 ## Known gaps
 

@@ -50,28 +50,9 @@ dist/
 # Fallback output of the demo-image script (leaves HTML behind when webshot is missing)
 docs/preview/*.html
 
-# ---- Paper: raw scrapes contain the operator's real goal text and task ids, commit aggregates only ----
-paper/data/tasks.json
-!paper/data/aggregates.json
-
-# LaTeX intermediates
-paper/*.aux
-paper/*.log
-paper/*.out
-paper/*.bbl
-paper/*.blg
-paper/*.fdb_latexmk
-paper/*.fls
-paper/*.bcf
-paper/*.run.xml
-paper/*.synctex.gz
+# ---- Paper stays local only: the PDF, aggregate data and LaTeX sources are
+# not published. Raw scrapes also contain the operator's real goal text. ----
+paper/
 
 # Intermediates of the demo-image script
 docs/preview/.scene-*.html
-
-# ---- Paper sources are not committed (only pad.pdf + aggregate data are published) ----
-paper/*.tex
-paper/*.bib
-paper/*.bbl
-paper/*.sty
-paper/*.bst

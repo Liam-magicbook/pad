@@ -352,7 +352,7 @@ Ne renommez jamais une capacité conflictuelle pour contourner la règle. Le hub
 
 ## Principes de conception : quel échec chaque choix évite
 
-Les mécanismes sont dans la section 3 de l'article ; voici le **pourquoi**.
+Chacun de ces principes existe parce qu'une panne précise a été observée :
 
 **L'état doit survivre au processus qui l'a produit.** Deux processus meurent toujours : la fenêtre de contexte et l'exécuteur. La réponse dominante est d'agrandir le premier — transcripts plus longs, résumés, recherche — en traitant le contexte comme du stockage. Ce n'est pas du stockage : pas de politique d'éviction, pas de schéma, pas de langage de requête, pas de partage, pas de piste d'audit, et il est le plus susceptible d'être tronqué exactement quand la tâche s'allonge. Nous plaçons chaque fait durable à la couche au temps moyen entre pannes le plus long : un processus, un fichier SQLite, en ajout seul.
 
@@ -433,8 +433,7 @@ Sans écrire du base64 à la main :
 | `JOIN.md` | Protocole d'adhésion + auto-vérifications + liste des pièges |
 | `CHANGELOG.md` | Changements de comportement ; à consulter d'abord en déboguant |
 | `docs/make_preview.py` | Régénérer le GIF d'accueil (sortie réelle → images → ffmpeg) |
-| `paper/` | Rapport système (`pad.pdf`, ICML Template) + mesures agrégées uniquement |
-| `tools/collect_stats.py` | Récupérer les détails de tâches d'un PAD vivant pour reproduire les chiffres de l'article |
+| `tools/collect_stats.py` | Récupérer les détails de tâches d'un PAD vivant pour reproduire les chiffres ci-dessous |
 | `README.{zh,fr,ja,ru}.md` | Versions chinoise / française / japonaise / russe |
 
 ## Développement
@@ -451,14 +450,9 @@ Les images de démonstration ne sont pas assemblées à la main ; elles capturen
 .venv/bin/python docs/make_preview.py
 ```
 
-## Article
+## Mesures
 
-`paper/pad.pdf` (format ICML Template, 8 pages de corps + 5 d'annexe) transforme ce qui précède en
-rapport système citable : définition du problème, relation aux travaux harness / long-horizon /
-delegation, architecture, principes de conception et mesures. L'annexe développe le schéma de la base,
-la machine à états des tâches, chacun des neuf contrats d'outil et les scripts de reproduction.
-
-Les mesures viennent de deux mois de journaux réels de ce système en production :
+Deux mois de journaux réels en production :
 
 | Métrique | Valeur |
 |---|---|
@@ -467,11 +461,11 @@ Les mesures viennent de deux mois de journaux réels de ce système en productio
 | Tâches longues | 18,7% au-delà d'une heure, 25 au-delà de 6 heures, la plus longue 42 heures |
 | Preuve par critère sur les tâches terminées | 93% |
 | Tâches échouées livrant tout de même un rapport structuré | 42% |
-| Cause dominante d'échec | 64/132 sont des défaillances d'environnement d'exécution (pas le modèle qui échoue) |
+| Cause dominante d'échec | 64/132 sont des défaillances d'environnement (pas le modèle qui échoue) |
 
-Cette dernière ligne est ce que tout le design défend : **la plupart des échecs se produisent dans l'environnement, pas dans le raisonnement.** Un harness à boucle unique voit « l'appel d'outil a cassé » ; PAD voit « cette capacité sur cette machine est cassée », et c'est la seconde qui est réparable.
+Cette dernière ligne est tout l'argument du design : **la plupart des échecs se produisent dans l'environnement, pas dans le raisonnement.** Un harness à boucle unique voit « l'appel d'outil a cassé » ; PAD voit « cette capacité sur cette machine est cassée », et c'est la seconde qui est réparable.
 
-Données et scripts de reproduction : `paper/data/aggregates.json` et `tools/collect_stats.py`. Le dump brut contient les objectifs réels de l'opérateur et n'est pas dans le dépôt.
+`tools/collect_stats.py` relit les détails de tâches d'un PAD en fonctionnement et recalcule chacun de ces chiffres.
 
 ## Lacunes connues
 
