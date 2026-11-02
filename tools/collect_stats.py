@@ -1,4 +1,4 @@
-"""并发抓取生产 PAD 的任务详情，用于论文的实测数据。
+"""Fetch task details from the production PAD concurrently, for the paper's measured data.
 
     KEY=$(cat ~/.pad_key) python3 tools/collect_stats.py --out paper/data/tasks.json
 """
@@ -25,7 +25,7 @@ def summary(rows):
     st = collections.Counter(r["status"] for r in rows)
     by_cap = collections.Counter(r["capability"] for r in rows)
     by_node = collections.Counter(r["node_id"] for r in rows if r.get("node_id"))
-    # 时长：created_at → updated_at（含排队）
+    # Duration: created_at -> updated_at (queue time included)
     durs = []
     for r in rows:
         try:

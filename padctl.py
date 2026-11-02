@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PAD 本地管理 CLI（人用，也可以当脑的降级通道）。
+"""Local ops CLI for PAD (used by humans, and also serves as a degraded channel for the brain).
 
     export PAD_URL=http://127.0.0.1:8790/pad/<KEY>
     ./padctl.py digest
-    ./padctl.py submit --capability demo.echo --goal "自检"
+    ./padctl.py submit --capability demo.echo --goal "self-check"
 """
 import argparse
 import json
@@ -49,7 +49,7 @@ def cmd_task(a):
 
 
 def _file_payload(paths):
-    """把本地文件转成 PAD 的 input_files 结构（base64 + MIME + 原名）。"""
+    """Convert local files into PAD's input_files structure (base64 + MIME + original name)."""
     import base64
     import mimetypes
     from pathlib import Path
@@ -83,7 +83,7 @@ def cmd_inputs(a):
 
 
 def cmd_input(a):
-    """把任务的输入文件下载到本地（保留原名）。"""
+    """Download a task's input files to the local machine, keeping their original names."""
     import requests
     from pathlib import Path
 

@@ -1,4 +1,4 @@
-# Linux 常驻（systemd）。改 User / WorkingDirectory 两处，然后：
+# Linux daemon (systemd). Change User / WorkingDirectory, then:
 #   sudo cp deploy/pad-node.service /etc/systemd/system/pad-ld.service
 #   sudo systemctl daemon-reload && sudo systemctl enable --now pad-ld
 [Unit]
@@ -14,7 +14,8 @@ ExecStart=/opt/pad-ld/.venv/bin/python -u /opt/pad-ld/ld_agent.py /opt/pad-ld/ld
 Restart=always
 RestartSec=10
 Environment=HOME=/home/CHANGE_ME
-# 保活环境的 PATH 很窄，把执行体 CLI 所在目录显式列出来（否则任务跑不起来）
+# The keep-alive PATH is very narrow; list the executor CLI directories explicitly (otherwise
+# tasks fail to start)
 Environment=PATH=/home/CHANGE_ME/.opencode/bin:/home/CHANGE_ME/.local/bin:/home/CHANGE_ME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]

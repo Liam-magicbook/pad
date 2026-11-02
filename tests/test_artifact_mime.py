@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""回归测试：get_artifact 按 MIME 分流——图片产物必须回原生 ImageContent，而不是把二进制 decode 成文本。
+"""Regression test: get_artifact dispatches by MIME — image artifacts must come back as a
+native ImageContent rather than decoding the binary into text.
 
-覆盖 2026-09-24 真实事故 (t-20260924-f408c1 / profile_NASA.png)：MCP 把 image/png
-当 text content 返回，上层收到以乱码开头的二进制文本，无法视觉读取。
+Covers the real incident from 2026-09-24 (t-20260924-f408c1 / profile_NASA.png): the MCP
+returned image/png as text content, so the caller received binary text starting with
+garbage and could not read it visually.
 
-跑法：
+How to run:
     cd "$(git rev-parse --show-toplevel)" && .venv/bin/python -m unittest discover -s tests -v
 """
 import base64
@@ -24,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import server  # noqa: E402
 from mcp.server.mcpserver import Image  # noqa: E402
 
-# 1x1 真 PNG（合法 PNG 头 + IDAT）
+# A real 1x1 PNG (valid PNG header + IDAT)
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 _TEXT = b"line01 alpha\nline02 beta\nline03 gamma\n"

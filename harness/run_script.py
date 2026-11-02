@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""跑一条确定性命令，把结果收敛成 PAD 的契约（和 run_harness.py 同一套）。
+"""Run one deterministic command and collapse the result into PAD's contract (same shape as run_harness.py).
 
-用法（由 ld_config 的 cmd 调起）：
+Usage (invoked from ld_config's cmd):
     run_script.py "bash my-daily.sh; tail -20 /tmp/my-daily-$(date +%F).log"
 
-为什么末尾要接 tail：脚本大多自己 `exec >> 日志`，
-stdout 是空的，不 tail 一下 PAD 就只能看到"退出码 0"，等于没汇报。
+Why tail at the end: most scripts `exec >> log` themselves, so
+stdout is empty; without a tail, PAD only sees "exit code 0", which is no report at all.
 
-契约：
-  退出 0            → done，summary = 输出的最后一行
-  非 0              → failed
-  非零退出 → 写入 failed 报告，交由 PAD 保留结果
+Contract:
+  exit 0            -> done, summary = the last line of output
+  non-zero          -> failed
+  non-zero exit     -> write a failed report and let PAD keep the result
 """
 import json
 import os
@@ -24,10 +24,10 @@ HERE = Path(__file__).resolve().parent
 
 
 def compose_report(command: str, code: int, dur: int, tail: list) -> str:
-    """脚本也会写验收汇报（不是只有 LLM 执行体才写）。
+    """Scripts write acceptance reports too (it is not just LLM executors that do).
 
-    脚本能给出来的就是：退出码、用时、跑了什么、日志尾巴。给不出的（比如"文章主题是什么"）
-    不编，放在 run.log 里让上层按需取——run.log 会被自动存一份到服务器。
+    All a script can offer is exit code, duration, what ran, and the log tail. Anything else (say "what is this
+    article about") is not invented, just left in run.log for the platform to fetch — run.log is auto-stored server-side.
     """
     lines = [
         f"【结论】{'命令执行成功' if code == 0 else f'命令失败（退出码 {code}）'}，用时 {dur}s。",
@@ -43,7 +43,7 @@ def compose_report(command: str, code: int, dur: int, tail: list) -> str:
 
 
 def acceptance_results() -> list:
-    """脚本判定不了验收真伪，但必须逐条 answering：说白了就是"这条我没法自证，证据在哪"。"""
+    """A script cannot judge acceptance, but must answer each item: "I cannot prove this — evidence is here"."""
     raw = os.environ.get("PAD_ACCEPTANCE", "")
     items = [l.strip()[2:].strip() for l in raw.splitlines() if l.strip().startswith("- ")]
     return [{"item": a, "passed": None,

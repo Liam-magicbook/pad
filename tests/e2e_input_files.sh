@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# 端到端演练：带文件下发 → 节点下载校验 → 执行体看到文件 → 回传结果
+# End-to-end drill: deliver files with a task -> node downloads and verifies -> executor sees
+# the files -> results come back
 #
-# 只跑本地临时库和临时 work_dir，不碰线上 PAD、不碰真实节点的 work 目录。
+# Uses only a local temp database and a temp work_dir; never touches the live PAD or a real
+# node's work directory.
 set -euo pipefail
 
 PAD_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,7 +33,7 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 
-# 节点配置：能力命令就是"把 inputs/ 里的文件列出来并回写 result.json"
+# Node config: the capability command simply "lists the files in inputs/ and writes result.json"
 cat > "$TMP/ld_config.yaml" <<YAML
 node_id: e2e-node
 role: test
@@ -85,7 +87,7 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 
-# 造三份真实字节：中文名 PDF、CSV、PNG
+# Create three real byte payloads: a Chinese-named PDF, a CSV, a PNG
 .venv/bin/python - "$TMP/payload.json" <<'PY'
 import base64, json, sys
 png = base64.b64decode(

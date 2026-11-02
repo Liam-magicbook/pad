@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 CREATE INDEX IF NOT EXISTS idx_reports_task ON reports(task_id);
 
--- 上层存一份的产物（小文件自动上传；大文件只留节点本地 + 元数据）
+-- Artifacts stored on the upper layer (small files upload automatically; large files stay on
+-- the node with metadata only)
 CREATE TABLE IF NOT EXISTS artifacts (
   artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id     TEXT,
@@ -52,7 +53,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_task_name ON artifacts(task_id, name);
 
--- 用户通过 MCP 随任务下发的输入文件（图片与普通文件同表），与节点回传的产物分开保存。
+-- Input files the user sends along with a task over MCP (images and ordinary files share this
+-- table), kept separate from the artifacts nodes send back.
 CREATE TABLE IF NOT EXISTS task_inputs (
   input_id    INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id     TEXT NOT NULL,

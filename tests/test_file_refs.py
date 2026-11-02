@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""回归测试：ChatGPT 附件直传（openai/fileParams）。
+"""Regression test: ChatGPT direct file upload (openai/fileParams).
 
-覆盖要点：
-  1. 工具 schema 严格符合 OpenAI 规范（四个属性、required 恰好两项、带 _meta）；
-  2. 文件引用（download_url）能拉回原始字节，SHA-256 与源文件一致；
-  3. SSRF 防护：非白名单域名 / http / 内网 IP / 重定向到内网，全部拒绝；
-  4. 超限立刻中止（不先下完再判断）；
-  5. path 字符串不被当成 base64，给出明确错误；
-  6. base64 老路径行为不变。
+Coverage:
+  1. The tool schema strictly follows the OpenAI spec (four properties, exactly two
+     required entries, carries _meta);
+  2. A file reference (download_url) fetches the original bytes, SHA-256 matches the source;
+  3. SSRF protection: non-whitelisted host / http / private IP / redirect to a private
+     IP are all rejected;
+  4. Oversize aborts immediately (no downloading the whole thing before checking);
+  5. A path string is not treated as base64 and yields a clear error;
+  6. The old base64 path behaves unchanged.
 
-跑法：
+How to run:
     cd "$(git rev-parse --show-toplevel)" && .venv/bin/python -m unittest tests.test_file_refs -v
 """
 import base64
@@ -29,13 +31,13 @@ os.environ["PAD_KEY"] = "testkey"
 os.environ["PAD_DB"] = str(Path(TMP) / "pad.db")
 os.environ["PAD_ARTIFACT_ROOT"] = str(Path(TMP) / "artifacts")
 os.environ["PAD_INPUT_FILE_ROOT"] = str(Path(TMP) / "input_files")
-# 安全开关是运行时读的（见 server.py 的 _flag/_file_url_hosts），所以测试里
-# 用 _Env 精确控制而不是在导入时污染模块状态。
+# The safety switches are read at runtime (see _flag/_file_url_hosts in server.py), so tests
+# control them precisely with _Env instead of polluting module state at import time.
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import server  # noqa: E402
 
-# 一个"像 MP3"的载荷：ID3v2 头 + 假帧数据，足够验证字节级一致
+# An "MP3-like" payload: ID3v2 header + fake frame data, enough to verify byte-level equality
 _MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x0a" + bytes(range(256)) * 8
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
@@ -47,7 +49,7 @@ def tearDownModule():
 
 @contextmanager
 def _Env(**kv):
-    """临时改环境变量，退出时还原。"""
+    """Temporarily override env vars, restoring them on exit."""
     old = {k: os.environ.get(k) for k in kv}
     os.environ.update({k: str(v) for k, v in kv.items()})
     try:
@@ -61,13 +63,14 @@ def _Env(**kv):
 
 
 def _test_env():
-    """打本地桩服务所需的开关（http + 回环豁免 + 白名单）。"""
+    """Switches needed by the local stub server (http + loopback exemption + whitelist)."""
     return _Env(PAD_FILE_URL_HOSTS="127.0.0.1,localhost",
                 PAD_FILE_ALLOW_HTTP="1", PAD_FILE_ALLOW_LOOPBACK="1")
 
 
 class _Srv:
-    """极简 HTTP 服务：按路径返回预设字节，可模拟超大响应与重定向。"""
+    """Minimal HTTP server: returns preset bytes per path, can simulate oversize responses
+    and redirects."""
 
     def __init__(self):
         self.routes = {}
@@ -110,7 +113,8 @@ class _Srv:
 
 
 class FileParamSchemaTest(unittest.TestCase):
-    """schema 形状错了 ChatGPT 会静默拒调，所以逐条对照规范验。"""
+    """A wrong schema shape makes ChatGPT silently refuse the call, so verify item by item
+    against the spec."""
 
     @classmethod
     def setUpClass(cls):
@@ -124,10 +128,10 @@ class FileParamSchemaTest(unittest.TestCase):
         defs = tool.input_schema["$defs"]
         name, dfn = next(iter(defs.items()))
         props = dfn["properties"]
-        # 四个属性必须全部声明
+        # All four properties must be declared
         for p in ("download_url", "file_id", "mime_type", "file_name"):
             self.assertIn(p, props, f"{name}.{p} 未声明")
-        # required 必须正好是这两项（多一个就被 Scan Tools 拒收）
+        # required must be exactly these two (one extra and Scan Tools rejects it)
         self.assertEqual(sorted(dfn["required"]), ["download_url", "file_id"])
         self.assertFalse(dfn.get("additionalProperties", True))
 
@@ -189,7 +193,7 @@ class FileFetchTest(unittest.TestCase):
         self.assertEqual(files[0]["data"], _PNG)
 
     def test_lying_image_declaration_rejected(self):
-        # 声明 image/png 但远端给的是 mp3 字节 -> 必须拒
+        # Declares image/png but the remote returns mp3 bytes -> must reject
       with _test_env():
         with self.assertRaises(ValueError):
             server._prepare_input_files([{
@@ -209,7 +213,8 @@ class FileFetchTest(unittest.TestCase):
             server.db.INPUT_FILE_MAX_BYTES = orig
 
     def test_streaming_limit_without_content_length(self):
-        # 服务器没给 Content-Length 时，必须靠边读边计数拦住
+        # When the server sends no Content-Length, the limit must be enforced by counting
+        # while reading
         orig = server.db.INPUT_FILE_MAX_BYTES
         server.db.INPUT_FILE_MAX_BYTES = 50
         try:
@@ -221,7 +226,8 @@ class FileFetchTest(unittest.TestCase):
             server.db.INPUT_FILE_MAX_BYTES = orig
 
     def test_redirect_to_non_whitelisted_host_blocked(self):
-        # 重定向目标必须重新过白名单：302 到外部域也要拦
+        # The redirect target must go through the whitelist again: a 302 to an external
+        # domain is also blocked
         with _test_env():
             with self.assertRaises(ValueError) as cm:
                 server._prepare_input_files([{
@@ -237,14 +243,14 @@ class FileFetchTest(unittest.TestCase):
 
 
 class UrlGuardTest(unittest.TestCase):
-    """不经网络，纯判 URL 是否放行。"""
+    """No network: purely decides whether a URL is allowed."""
 
     def test_allows_arbitrary_public_host(self):
-        # 不限制域名后，正常公网主机应当通过"可拉"判定
+        # With no domain restriction, a normal public host should pass the "fetchable" check
         try:
             server._check_url_allowed("https://example.com/x.mp3")
         except server.FileFetchError as exc:
-            # 允许"解析失败"（离线环境），但不许因域名被拒
+            # "resolution failure" is allowed (offline environment), but not rejection on domain
             self.assertNotIn("白名单", str(exc))
             self.assertIn("解析", str(exc))
 
@@ -253,7 +259,7 @@ class UrlGuardTest(unittest.TestCase):
             server._check_url_allowed("http://127.0.0.1/x")
 
     def test_rejects_metadata_ip(self):
-        # 云元数据服务，SSRF 的经典目标
+        # Cloud metadata service, the classic SSRF target
         with self.assertRaises(server.FileFetchError):
             server._check_url_allowed("https://169.254.169.254/latest/meta-data/")
 
@@ -262,22 +268,23 @@ class UrlGuardTest(unittest.TestCase):
             server._check_url_allowed("https:///nohost")
 
     def test_default_has_no_domain_restriction(self):
-        # 2026-10-26 决策：不搞域名白名单。ChatGPT 附件实测落在 Azure Blob
-        # （oaisdmntprwestus3.blob.core.windows.net），写死 oai* 会自己拦自己。
+        # 2026-10-26 decision: no domain whitelist. ChatGPT attachments in practice land on
+        # Azure Blob (oaisdmntprwestus3.blob.core.windows.net), so hardcoding oai* would
+        # block ourselves.
         with _Env(PAD_FILE_URL_HOSTS=None):
             os.environ.pop("PAD_FILE_URL_HOSTS", None)
             self.assertEqual(server._file_url_hosts(), (),
                              "默认必须不限制域名")
-        # 任意公网域名都应放行（这里只判策略，不联网）
+        # Any public domain should pass (this only checks policy, no network)
         self.assertTrue(server._host_allowed("oaisdmntprwestus3.blob.core.windows.net", ()))
         self.assertTrue(server._host_allowed("files.oaiusercontent.com", ()))
         self.assertTrue(server._host_allowed("any-cdn.example.net", ()))
 
     def test_optional_whitelist_still_works_when_set(self):
-        # 需要收紧时 PAD_FILE_URL_HOSTS 仍可用
+        # PAD_FILE_URL_HOSTS is still available when you need to tighten things
         with _Env(PAD_FILE_URL_HOSTS="*.openai.com,exact.example.org"):
             hosts = server._file_url_hosts()
-            self.assertTrue(server._host_allowed("files.oaiusercontent.com", ()))  # 空格
+            self.assertTrue(server._host_allowed("files.oaiusercontent.com", ()))  # spaces
             self.assertTrue(server._host_allowed("a.openai.com", hosts))
             self.assertFalse(server._host_allowed("evil.com", hosts))
             self.assertTrue(server._host_allowed("exact.example.org", hosts))

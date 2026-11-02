@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""回归测试：随任务下发的输入文件（input_files）——从"只收图片"扩到"任意文件"。
+"""Regression test: input files delivered with a task (input_files) — expanded from
+"images only" to "any file".
 
-覆盖要点：
-  1. 图片仍按真实文件头校验（假声明必须拒），格式/扩展名规范化；
-  2. 普通文件（pdf/csv/zip/mp4）原样落盘，MIME 与扩展名不乱改；
-  3. 文本类带 preview，二进制不带；
-  4. 老参数名 input_images 仍然能用；
-  5. 任务输入与产物是两张表：get_artifact 查不到输入文件，get_input_file 能查到；
-  6. 骨架过期的老节点领不到"带普通文件"的任务，但能领到纯小图片任务。
+Coverage:
+  1. Images are still validated by real file header (a lying declaration must be rejected),
+     format/extension normalised;
+  2. Ordinary files (pdf/csv/zip/mp4) are stored byte-for-byte, MIME and extension untouched;
+  3. Text types carry a preview, binaries do not;
+  4. The old parameter name input_images still works;
+  5. Task inputs and artifacts are two tables: get_artifact cannot find an input file,
+     get_input_file can;
+  6. Old nodes with a stale bundle do not receive tasks carrying ordinary files, but still
+     receive small image-only tasks.
 
-跑法：
+How to run:
     cd "$(git rev-parse --show-toplevel)" && .venv/bin/python -m unittest discover -s tests -v
 """
 import base64
@@ -33,7 +37,8 @@ from mcp.server.mcpserver import Image  # noqa: E402
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
-# 最小可用 PDF 头 + 尾（不是完整可渲染文件，只用来验证"按字节原样存")
+# Minimal usable PDF header + trailer (not a complete renderable file, only used to verify
+# "stored byte-for-byte")
 _PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n"
         b"trailer<</Root 1 0 R>>\n%%EOF\n")
 _CSV = b"name,score\nli,91\nwang,88\n"
@@ -46,10 +51,12 @@ def tearDownModule():
 
 
 def _bind_db() -> None:
-    """测试发现会把多个测试模块塞进同一个进程，db 是单例、路径在 import 时就定死了。
+    """Test discovery puts several test modules in one process; db is a singleton and its
+    paths are frozen at import time.
 
-    别的模块（test_artifact_mime）的 tearDownModule 会删掉它自己的临时目录，
-    所以这里必须显式把路径重新绑到本模块的 TMP，否则拿到的是已删除的路径。
+    The tearDownModule of another module (test_artifact_mime) removes its own temp dir, so
+    here the paths must be explicitly rebound to this module's TMP, otherwise you get a path
+    that has already been deleted.
     """
     (Path(TMP) / "artifacts").mkdir(parents=True, exist_ok=True)
     (Path(TMP) / "input_files").mkdir(parents=True, exist_ok=True)
@@ -63,14 +70,15 @@ def _b64(data: bytes) -> str:
 
 
 class InputFilePrepareTest(unittest.TestCase):
-    """服务端入参校验层。"""
+    """Server-side input validation layer."""
 
     def test_image_is_normalised_from_data_url(self):
         out = server._prepare_input_files([
             {"name": "图 1.png", "data_url": "data:image/png;base64," + _b64(_PNG)}])
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["mime_type"], "image/png")
-        # 中文名保留（执行体要在 inputs/ 里认出这是什么），只规范扩展名
+        # Chinese names are preserved (the executor has to recognise the file inside inputs/),
+        # only the extension is normalised
         self.assertEqual(out[0]["name"], "图 1.png")
         self.assertEqual(out[0]["data"], _PNG)
 
@@ -143,7 +151,7 @@ class InputFilePrepareTest(unittest.TestCase):
 
 
 class InputFileStorageTest(unittest.TestCase):
-    """存储 + 回读：任务输入 ≠ 产物。"""
+    """Storage + read-back: task inputs are not artifacts."""
 
     @classmethod
     def setUpClass(cls):
@@ -207,7 +215,8 @@ class InputFileStorageTest(unittest.TestCase):
 
 
 class LegacyNodeClaimTest(unittest.TestCase):
-    """骨架过期的老节点只允许领纯小图片任务（它的校验是 4 张 / 5MiB）。"""
+    """Old nodes with a stale bundle may only take small image-only tasks (their validation
+    limit is 4 images / 5MiB)."""
 
     @classmethod
     def setUpClass(cls):
@@ -241,7 +250,7 @@ class LegacyNodeClaimTest(unittest.TestCase):
         self.assertEqual(claimed["task_id"], task["task_id"])
 
     def test_old_node_never_takes_plain_task_without_inputs(self):
-        # 没输入文件的任务老节点照常能领（不该因为它旧就饿着）
+        # A node can still take tasks with no input files (being old should not starve it)
         self._clean()
         task = db.submit_task("test.claim", "plain task")
         claimed = db.claim_task("old-node", ["test.claim"], server_bundle="fresh")

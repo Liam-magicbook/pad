@@ -1,6 +1,6 @@
 # PAD
 
-[中文](README.md) · [English](README.en.md) · **Français** · [日本語](README.ja.md) · [Русский](README.ru.md)
+[English](README.md) · [中文](README.zh.md) · **Français** · [日本語](README.ja.md) · [Русский](README.ru.md)
 
 **Transformez les machines que vous possédez déjà en une flotte d'exécution que ChatGPT ou Claude peut piloter.**
 Un processus, un fichier SQLite, deux portes — le modèle est sans état, l'état vit dans PAD.
@@ -9,7 +9,7 @@ Un processus, un fichier SQLite, deux portes — le modèle est sans état, l'é
 
 <sub>Les quatre panneaux sont des images d'une exécution réelle : `./quickstart.sh` qui s'allume ligne par ligne, `padctl digest`, la surface d'outils MCP et un rapport de tâche. Générés par `docs/make_preview.py` à partir de la sortie réelle de cette machine — pas une maquette.</sub>
 
-**Article** : [`paper/pad.pdf`](paper/pad.pdf) — un rapport système sur 6 machines, 938 tâches réelles et 835 heures-machine, au format ICML 2025.
+**Article** : [`paper/pad.pdf`](paper/pad.pdf) — un rapport système sur 6 machines, 938 tâches réelles et 835 heures-machine, au format ICML Template.
 
 ---
 
@@ -421,7 +421,7 @@ réelle de cette machine puis la photographient. À relancer après un changemen
 
 ## Article
 
-`paper/pad.pdf` (format ICML 2025, 8 pages de corps + 5 d'annexe) transforme ce qui précède en
+`paper/pad.pdf` (format ICML Template, 8 pages de corps + 5 d'annexe) transforme ce qui précède en
 rapport système citable : définition du problème, relation aux travaux sur les harness /
 long-horizon / délégation, architecture, principes de conception, et mesures. L'annexe détaille
 le schéma de base, la machine d'états des tâches, le contrat de chacun des neuf outils et les

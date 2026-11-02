@@ -1,10 +1,12 @@
-"""把失败任务按终端汇报里的主因归类（论文 §6 的 Table）。
+"""Bucket failed tasks by the primary cause stated in the terminal's final report (the
+table in §6 of the paper).
 
     python3 tools/classify_failures.py paper/data/tasks.json
 
-规则是"第一个命中的模式即主因"，顺序固定，这样同一份数据永远给出同一张表。
-分类不完全可靠——它读的是终态 summary 的文字——所以论文里把它当作"主因分布"，
-不作为精确因果。
+The rule is "first matching pattern wins", and the order is fixed so that the same data
+always yields the same table. The classification is not fully reliable — it reads the free
+text of the terminal summary — so in the paper we present it as a "distribution of primary
+causes" rather than as precise causality.
 """
 import collections
 import json

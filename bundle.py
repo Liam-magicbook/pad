@@ -1,15 +1,15 @@
-"""客户端骨架的版本指纹。
+"""Version fingerprint of the client skeleton.
 
-为什么需要：文档和提示词改在服务端，节点是**拷贝**，不会自动拿到更新。
-结果就是"修好的规矩只对新节点生效，老节点继续按旧规矩犯错"。
-这个指纹让 drift 可见：节点注册时上报自己的指纹，PAD 一比就知道谁在跑旧代码。
+Why: docs and prompts are edited on the server, and nodes hold **copies** that never pick up
+updates themselves — "a fixed rule only applies to new nodes, old nodes keep the old mistake".
+The fingerprint makes drift visible: nodes report theirs on register, PAD sees who is stale.
 
-只对**双方都有的、且改了就该重拉**的文件取指纹：
-  - ld_agent.py / harness/*.py  行为代码
-  - harness/prompt.md.tmpl      执行体提示词（最容易漂的就是它）
-  - JOIN.md                     协议文档
+Only fingerprint files **both sides have, that should be re-pulled when changed**:
+  - ld_agent.py / harness/*.py  behaviour code
+  - harness/prompt.md.tmpl      executor prompt (the thing that drifts most easily)
+  - JOIN.md                     protocol doc
 
-节点的 ld_config.yaml 是它自己的，**不参与**指纹。
+A node's ld_config.yaml belongs to the node itself and **does not participate**.
 """
 import hashlib
 from pathlib import Path
@@ -22,11 +22,11 @@ FILES = [
     "harness/run_script.py",
 ]
 
-# agent.bundle.tgz 里实际打哪些文件 —— 唯一的出包清单，server.py 照这个打包。
-# 必须 ⊇ FILES，否则节点从包里解出来的树永远算不出服务端的指纹（恒假报警）。
+# Which files actually go into agent.bundle.tgz — the one packaging list, and server.py
+# packs from it. Must ⊇ FILES, else the tree a node unpacks can never hash to the server's.
 #
-# 想把自己的私有脚本（比如某台机器专用的流水线）也随骨架下发，就往这个列表里加一项，
-# 或者在环境变量 PAD_BUNDLE_EXTRA 里给逗号分隔的相对路径（默认不含任何私有文件）。
+# To ship your own private scripts (say a pipeline for one specific machine) with the
+# skeleton, add an entry here, or list comma-separated relative paths in PAD_BUNDLE_EXTRA.
 BUNDLE_FILES = [
     "ld_agent.py",
     "bundle.py",

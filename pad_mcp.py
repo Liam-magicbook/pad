@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""通过 MCP 端点用脑的那套工具（不是 REST 降级通道）。
+"""Drive the brain's own tool surface through the MCP endpoint (not the REST fallback).
 
-为什么要有它：ChatGPT 走的就是 `/pad/<KEY>/mcp`，本地调试如果一直用 REST，
-测出来的东西和脑子实际能用到的不是一回事（工具 schema、返回结构都不同）。
+Why this exists: ChatGPT talks to `/pad/<KEY>/mcp`. If local debugging only ever uses REST,
+what you measure is not what the brain actually gets — the tool schema and the response
+shape both differ.
 
-用法:
+Usage:
     export PAD_MCP_URL="http://127.0.0.1:8790/pad/$PAD_KEY/mcp"
 
     ./pad_mcp.py tools
     ./pad_mcp.py digest
-    ./pad_mcp.py submit --capability demo.echo --goal "自检" --acceptance "回 pong"
+    ./pad_mcp.py submit --capability demo.echo --goal "self-check" --acceptance "reply pong"
     ./pad_mcp.py submit --capability my.agent --goal "..." --file a.pdf --file b.xlsx
     ./pad_mcp.py task t-20261026-xxxxxx
-    ./pad_mcp.py input-file t-20261026-xxxxxx 报告.pdf --out /tmp
+    ./pad_mcp.py input-file t-20261026-xxxxxx report.pdf --out /tmp
     ./pad_mcp.py call submit_task '{"capability":"x","goal":"y"}'
 """
 import argparse
@@ -47,7 +48,8 @@ def url() -> str:
 
 
 def _text(result) -> str:
-    """MCP 结果里的文本块拼起来；图片块给一行摘要（不要把二进制打进终端）。"""
+    """Join the text blocks of an MCP result; for image blocks emit a one-line summary
+    (never dump binary into the terminal)."""
     out = []
     for c in getattr(result, "content", []) or []:
         t = getattr(c, "type", "")

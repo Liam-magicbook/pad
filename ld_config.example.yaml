@@ -1,9 +1,9 @@
-# 最小可跑的节点配置：本地起一个 PAD 服务端 + 一个假 LD，五分钟验证整条链路。
+# Smallest runnable node config: local PAD server + a fake LD, verify the whole pipeline in 5 min.
 #
 #   PAD_KEY=devkey PAD_DB=/tmp/pad.db .venv/bin/python -m uvicorn server:app --port 8790
 #   PAD_KEY=devkey .venv/bin/python ld_agent.py ld_config.example.yaml
 #
-# 只为了跑通，capability 全是 echo。真实使用请照 ld_config.node.yaml.example 改。
+# Echo-only, just to prove it runs. For real use, follow ld_config.node.yaml.example.
 
 node_id: local-1
 role: publisher

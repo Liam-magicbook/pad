@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""把一个 PAD 任务翻译成「本机某个 agent CLI」的无头调用，并把结果收敛成一句话。
+"""Translate one PAD task into a headless call of some local agent CLI, and collapse the result into one line.
 
-用法：
-    run_harness.py [opencode|claude|codex]        # 默认 opencode
+Usage:
+    run_harness.py [opencode|claude|codex]        # opencode by default
 
-PAD 本身不关心你用什么执行体 —— 它只发"要干什么"。适配在这里，
-每个节点自己决定。换执行体就是换这一个参数。
+PAD itself does not care which executor you use — it only sends "what to do". The adaptation lives here,
+decided by each node. Switching executors means switching this one argument.
 
-为了统一行为，三个执行体都按同一套约定收口：
-  提示词从 harness/prompt.md.tmpl 渲染
-  完成或无法完成时都写 $PAD_WORK_DIR/result.json，由退出码区分 done / failed
-  完整输出留在 $PAD_WORK_DIR/run.log，永远不上传
-  rc==0 却没写 result.json（执行体"提前收尾"）时，opencode v2 / codex 按同一会话再催一次；
-  claude 没有可续的会话概念，跳过（PAD_RESUME_ONCE=0 可关掉续跑）。
+To keep behavior uniform, all three executors close out under the same contract:
+  the prompt is rendered from harness/prompt.md.tmpl
+  whether done or unable to finish, write $PAD_WORK_DIR/result.json; the exit code distinguishes done / failed
+  full output stays in $PAD_WORK_DIR/run.log and is never uploaded
+  when rc==0 but result.json is missing (the executor "wrapped up early"), opencode v2 / codex are nudged
+  once more in the same session; claude has no resumable session, so it is skipped (PAD_RESUME_ONCE=0 disables it).
 """
 import json
 import os
@@ -25,8 +25,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TMPL = HERE / "prompt.md.tmpl"
 
-# rc==0 却没写 result.json 时，多半是执行体「提前收尾」（把长任务放会话后台就结束了本轮，
-# 进程退出把后台一并带走）。用同一个会话再催一次，给一次真正做完的机会。
+# When rc==0 but result.json is missing, the executor most likely wrapped up early (parked a long task in the
+# session background and ended the turn, taking it down on exit). Nudge the same session once more so it can finish.
 RESUME_PROMPT = """上一轮你把对话收尾了，但 PAD 要求的 ${PAD_WORK_DIR}/result.json 并没有写出来，
 说明任务很可能没真正完成（常见原因：把长任务放到会话后台就结束了本轮，进程一退，后台连带被杀）。
 
@@ -35,8 +35,8 @@ RESUME_PROMPT = """上一轮你把对话收尾了，但 PAD 要求的 ${PAD_WORK
 真的结束（不要再次抛下就收尾）。最后按契约写 ${PAD_WORK_DIR}/result.json。
 如果穷尽合理路径仍无法完成，就写 ${PAD_WORK_DIR}/result.json，如实说明尝试、阻碍和未完成项。"""
 
-# rc!=0、且是上游 provider 回了个裸 HTTP 400（opencode 把 4xx 判为不可重试）时用这条。
-# 这类是偶发/上游故障，跟会话内容无关；同一个会话再催一次往往就能过。
+# Used when rc!=0 and the upstream provider returned a bare HTTP 400 (opencode treats 4xx as non-retryable).
+# These are transient/upstream failures unrelated to the session content; nudging the same session once usually gets through.
 RESUME_PROMPT_ERROR = """上一轮的模型请求被上游以 HTTP 400（InvalidRequest）拒绝，会话被迫中断，
 PAD 要求的 ${PAD_WORK_DIR}/result.json 也没能写出来。这是上游的偶发故障，不是你的错。
 
@@ -47,10 +47,10 @@ PAD 要求的 ${PAD_WORK_DIR}/result.json 也没能写出来。这是上游的�
 
 
 def augment_path():
-    """保活环境（systemd / cron / launchd）给的 PATH 很窄，常找不到 CLI。
+    """Keep-alive environments (systemd / cron / launchd) hand out a very narrow PATH, so CLIs are often not found.
 
-    特别地：nvm 装在旧版本下的 CLI（如 codex 在 v20 而默认 v24）只有把
-    所有版本目录都收进来才找得到，不能只取"当前默认版本"。
+    In particular: a CLI installed under an older nvm version (codex on v20 while the default is v24) is only
+    found if every version dir is collected — taking only the "current default version" is not enough.
     """
     home = Path.home()
     extra = [home / ".local/bin", home / ".npm-global/bin", home / ".opencode/bin",
@@ -72,10 +72,10 @@ _OC_MAJOR = None
 
 
 def opencode_major() -> int:
-    """探本机 opencode 的大版本（2=新版，1=老版）。取不到就按 1 处理（保守）。
+    """Detect the local opencode major version (2=new, 1=old). Fall back to 1 when detection fails (conservative).
 
-    v1 与 v2 的 `run` 参数不同（v2 删了 --dir、多了 --standalone），而 pad 的骨架
-    是**多节点共享**的：远端还有跑 v1.18 的机器，所以这里按版本分派，别写死一种。
+    v1 and v2 take different `run` arguments (v2 dropped --dir and added --standalone), and pad's skeleton
+    is **shared across nodes**: remotes still run v1.18, so dispatch by version here instead of hardcoding one.
     """
     global _OC_MAJOR
     if _OC_MAJOR is not None:
@@ -91,27 +91,27 @@ def opencode_major() -> int:
 
 
 def session_title(task_id: str) -> str:
-    """本次派发给会话打的固定标题，用于收尾后反查同一个会话。"""
+    """Fixed title stamped on the session for this dispatch, used to find the same session again after close-out."""
     return f"pad:{task_id}"
 
 
 def build_cmd(harness: str, prompt: str, ws: str, task_id: str = "") -> list:
-    """各家的无人值守调用方式。这里就是全部的适配代码。"""
+    """Each vendor's unattended invocation. This is the entire adapter."""
     if harness == "opencode":
-        # 工作目录统一靠子进程 cwd（见 main() 的 subprocess.run(..., cwd=ws)）。
+        # Working dir comes from the child process cwd (see subprocess.run(..., cwd=ws) in main()).
         if opencode_major() >= 2:
-            # v2 注意 1：`--dir` 已删除，加了会 `Unrecognized flag: --dir`。
-            # v2 注意 2：默认走全用户共享的后台服务（opencode serve --service），共享
-            # 服务的事件流一旦被挤断，CLI 会 `Transport: InvalidHTTPResponse ...
-            # /api/event` 直接 exit 1（而 session 还在服务端跑）。无头派发用
-            # --standalone 起私有 server，生命周期跟着这次任务走。
-            # v2 注意 3：`--title` 给会话打上固定标题「pad:<task_id>」，这样 rc==0 但
-            # 没写 result.json 时能按标题把同一个会话找回来续跑（见 resume_once）。
+            # v2 note 1: `--dir` is gone; passing it yields `Unrecognized flag: --dir`.
+            # v2 note 2: by default it uses a user-wide shared background service (opencode serve --service);
+            # once that shared service's event stream drops, the CLI exits 1 with `Transport: InvalidHTTPResponse ...
+            # /api/event` while the session keeps running server-side. Headless dispatch uses --standalone to
+            # start a private server whose lifetime follows this task.
+            # v2 note 3: `--title` stamps the fixed title "pad:<task_id>" so that, when rc==0 but result.json
+            # is missing, the same session can be found by title and resumed (see resume_once).
             args = ["opencode", "run", "--standalone", "--auto"]
             if task_id:
                 args += ["--title", session_title(task_id)]
             return args + [prompt]
-        # v1：保持原有形态（实测可用）
+        # v1: keep the original shape (verified working)
         return ["opencode", "run", "--auto", "--dir", ws, prompt]
     if harness == "claude":
         return ["claude", "-p", "--dangerously-skip-permissions", prompt]
@@ -122,10 +122,10 @@ def build_cmd(harness: str, prompt: str, ws: str, task_id: str = "") -> list:
 
 
 def _oc_dir_env(wd: Path) -> dict:
-    """opencode 用 `PWD` 环境变量（不是真实 cwd）判定会话所属目录。
+    """opencode decides which directory a session belongs to from the `PWD` env var, not the real cwd.
 
-    无头派发时 PWD 是从保活环境里继承的（ld_agent 的 shell 把它设成 work_dir），
-    所以反查/续跑必须显式把 PWD 指到 wd，才能命中同一个会话。
+    In headless dispatch PWD is inherited from the keep-alive environment (ld_agent's shell sets it to work_dir),
+    so lookups and resumes must explicitly point PWD at wd to hit the same session.
     """
     env = dict(os.environ)
     env["PWD"] = str(wd)
@@ -133,7 +133,7 @@ def _oc_dir_env(wd: Path) -> dict:
 
 
 def find_session_id(task_id: str, wd: Path) -> str:
-    """按 build_cmd 打的标题「pad:<task_id>」反查本次会话 id；找不到返回空串。"""
+    """Find this dispatch's session id by the "pad:<task_id>" title set in build_cmd; return an empty string if not found."""
     if not task_id:
         return ""
     want = session_title(task_id)
@@ -155,16 +155,16 @@ def find_session_id(task_id: str, wd: Path) -> str:
     return ""
 
 
-# codex 的会话 id 只能从 run.log 头部抓：`codex exec` 每次都会先打一行
-# `session id: <uuid>`（没有 opencode 那样的 --title 可用来反查）。
+# codex's session id can only be scraped from the head of run.log: every `codex exec` first prints a line
+# `session id: <uuid>` (there is no --title to look up, unlike opencode).
 _CODEX_SID_RE = re.compile(r"^\s*session id:\s*([0-9a-fA-F-]{36})\s*$", re.M)
 
 
 def codex_session_id(log_path: Path) -> str:
-    """从 run.log 抓 codex 本次会话 id；找不到返回空串。
+    """Scrape codex's session id for this dispatch from run.log; return an empty string if not found.
 
-    只取**第一个**匹配：续跑会把新的 `session id:` 追加到日志末尾，
-    而我们要续的始终是最初那个会话。
+    Take only the **first** match: resumes append new `session id:` lines to the end of the log,
+    and we always want to resume the original session.
     """
     try:
         txt = log_path.read_text(errors="ignore")
@@ -176,9 +176,9 @@ def codex_session_id(log_path: Path) -> str:
 
 def resume_once(harness: str, task_id: str, wd: Path, ws: str, log_path: Path,
                 sid: str = "", prompt_text: str = "") -> int:
-    """没写 result.json 就收尾时，按同一会话续跑一次。
+    """When the run closes out without result.json, resume once in the same session.
 
-    返回续跑进程的 rc；没执行（不适用/找不到会话）返回 None。
+    Returns the resume process rc; returns None when nothing ran (not applicable / session not found).
     """
     prompt = (prompt_text or RESUME_PROMPT).replace("${PAD_WORK_DIR}", str(wd))
     if harness == "opencode":
@@ -195,10 +195,10 @@ def resume_once(harness: str, task_id: str, wd: Path, ws: str, log_path: Path,
         if not sid:
             print("[harness] run.log 里没抓到 codex 会话 id，跳过自动续跑", file=sys.stderr)
             return None
-        # 注意：`codex exec resume` 没有 `-C`（工作目录靠子进程 cwd，见 main()）。
+        # Note: `codex exec resume` has no `-C` (working dir comes from the child cwd, see main()).
         args = ["codex", "exec", "resume", sid, "--skip-git-repo-check",
                 "--dangerously-bypass-approvals-and-sandbox", prompt]
-        run_env = None            # 不覆盖 PWD：codex 不看 PWD
+        run_env = None            # do not override PWD: codex ignores it
     else:
         return None
     print(f"[harness] 按会话 {sid} 自动续跑一次…", file=sys.stderr)
@@ -215,7 +215,7 @@ def resume_once(harness: str, task_id: str, wd: Path, ws: str, log_path: Path,
 
 
 def _opencode_log_path() -> Path:
-    """opencode 服务端日志文件路径（--standalone 的私有 server 也写这里）。"""
+    """Path to the opencode server log file (the --standalone private server writes here too)."""
     try:
         out = subprocess.run(["opencode", "debug", "paths", "log"],
                              capture_output=True, text=True, timeout=30).stdout.strip()
@@ -227,10 +227,10 @@ def _opencode_log_path() -> Path:
 
 
 def detect_provider_400(wd: Path, sid: str) -> bool:
-    """判断这次 rc!=0 是不是上游回了个裸 HTTP 400（opencode 判为不可重试的 InvalidRequest）。
+    """Decide whether this rc!=0 was a bare HTTP 400 from upstream (an InvalidRequest opencode treats as non-retryable).
 
-    先看 run.log（CLI 偶尔会原样带出来）；再在 opencode 服务端日志里**按 sessionID 精确匹配**
-    'Failed to drain Session ... Provider request failed with HTTP 400'，避免撞到别的会话的旧记录。
+    Check run.log first (the CLI sometimes surfaces it verbatim); then, in the opencode server log, **exactly match
+    by sessionID** against 'Failed to drain Session ... Provider request failed with HTTP 400' to avoid stale records.
     """
     try:
         txt = (wd / "run.log").read_text(errors="ignore")
@@ -256,11 +256,11 @@ def detect_provider_400(wd: Path, sid: str) -> bool:
 
 
 def harvest(res: Path, seconds: int) -> bool:
-    """CLI 提前断流退出时，服务端 session 往往还在跑并稍后补落 result.json。
+    """When the CLI dies early, the server-side session is often still running and drops result.json later.
 
-    v2 的后台服务/session 生命周期独立于 CLI 进程：CLI 报 exit 1 不代表活没干成。
-    这里给一段宽限期轮询 result.json，避免把「已经干完的活」报成失败。
-    宽限期用 PAD_HARVEST_SEC 调（默认 180s，0=不等）。
+    v2's background service/session lifetime is independent of the CLI process: a CLI exit 1 does not mean the job failed.
+    Poll result.json for a grace period here so finished work is not reported as failure.
+    Tune the grace period with PAD_HARVEST_SEC (default 180s, 0=do not wait).
     """
     if seconds <= 0 or res.exists():
         return res.exists()
@@ -321,12 +321,12 @@ def main() -> int:
                       f"进入 {harvest_sec}s harvest 等待（session 可能在服务端继续跑）\n")
         harvest(res, harvest_sec)
 
-    # 没写 result.json 就收尾 / 上游裸 400：按同一个会话续跑一次（PAD_RESUME_ONCE=0 关闭）。
-    #   - rc==0：执行体「提前收尾」（长任务放会话后台就结束了本轮，进程退出把后台一并带走）。
-    #   - rc!=0 且是 provider HTTP 400：opencode 把 4xx 判为不可重试，偶发上游故障会直接带走整个会话。
-    # opencode v2 / codex 支持续跑（codex 的会话 id 从 run.log 抓，见 codex_session_id）；
-    # claude 没有可续的会话概念，自动跳过。rc!=0 的裸 400 识别是 opencode 专属，
-    # 其他执行体只做 rc==0 那一次（不确定的错误不硬续，避免把真失败拖成假成功）。
+    # Closed out without result.json / upstream bare 400: resume once in the same session (PAD_RESUME_ONCE=0 disables).
+    #   - rc==0: the executor wrapped up early (parked a long task in the session background and ended the turn,
+    #     and exiting took it down). rc!=0 with a provider HTTP 400: opencode treats 4xx as non-retryable, so a
+    #     transient upstream fault takes the whole session with it. opencode v2 / codex support resuming (codex's
+    #     session id is scraped from run.log, see codex_session_id); claude has no resumable session concept and is
+#     skipped. Bare-400 detection is opencode-only; other executors get just the rc==0 nudge (no forced resume on an
     resume_enabled = os.environ.get("PAD_RESUME_ONCE", "1") not in ("0", "")
     can_resume = (harness == "opencode" and opencode_major() >= 2) or harness == "codex"
     rc2 = None
@@ -361,7 +361,7 @@ def main() -> int:
     else:
         tail = [l.strip() for l in (wd / "run.log").read_text(errors="ignore").splitlines() if l.strip()]
         print((tail[-1] if tail else "无输出")[:400])
-    return 1  # 没有结构化结果就不能把任务报告成 done
+    return 1  # no structured result means the task cannot be reported as done
 
 
 if __name__ == "__main__":

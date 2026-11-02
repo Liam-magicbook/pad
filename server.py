@@ -1,7 +1,7 @@
 """PAD server: one process, SQLite state, two doors.
 
-  /pad/<KEY>/mcp            MCP (给脑 / ChatGPT)
-  /pad/<KEY>/api/...        REST (给各台机器的 LD agent)
+  /pad/<KEY>/mcp            MCP (for the brain / ChatGPT)
+  /pad/<KEY>/api/...        REST (for the LD agent on each machine)
 
 The brain only ever sees 5 coarse tools. It has no shell, no machine id, no repo.
 """
@@ -48,22 +48,22 @@ PAD_DB = os.environ.get("PAD_DB", "pad.db")
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get(
     "PAD_ALLOWED_HOSTS", "localhost,127.0.0.1"
 ).split(",") if h.strip()]
-# MCP 的 DNS-rebinding 白名单是**逐字匹配 Host 头**，而 Host 头带端口。
-# 只写 `127.0.0.1` 时，`127.0.0.1:8790` 会被判 Invalid Host → 421（现象很像"服务挂了"）。
-# 所以对没写端口的条目补一条 `:*` 通配，让它在本机任意端口都成立。
+# The MCP DNS-rebinding allowlist matches the Host header **literally**, and that header
+# carries a port. Listing only `127.0.0.1` makes `127.0.0.1:8790` an Invalid Host → 421 (which
+# looks a lot like "the service is down"). So entries without a port get a `:*` wildcard.
 ALLOWED_HOSTS += [f"{h}:*" for h in list(ALLOWED_HOSTS) if ":" not in h]
 
-# artifacts 的 human-delivery 平面不在 PAD 内：PAD 只做最薄代理，把
-# get_artifact_delivery(task_id, name) 转给同机的 Artifact Bridge（内部调用，
-# 密钥不经过 MCP、不返回给 ChatGPT）。Bridge 负责校验已登记 / 惰性物化 / 签名。
-# 同理 get_artifact_observe 只是把请求转给 Bridge 的 observe 平面，解码/抽帧/
-# 安全全在 Bridge，PAD 一行不复制。
+# The artifacts human-delivery plane is not inside PAD: PAD is the thinnest proxy, forwarding
+# get_artifact_delivery(task_id, name) to the same machine's Artifact Bridge (an internal call;
+# the key never crosses MCP and is never returned to ChatGPT). The Bridge validates registration,
+# lazily materializes and signs it. Likewise get_artifact_observe only forwards to the Bridge's
+# observe plane — decoding / frame extraction / safety all live there, PAD duplicates nothing.
 AB_DELIVERY_URL = os.environ.get("AB_DELIVERY_URL", "http://127.0.0.1:8791/delivery")
 AB_DELIVERY_KEY = os.environ.get("AB_DELIVERY_KEY", "")
 
 
 def _derive_observe_url(delivery_url: str) -> str:
-    """observe 与 delivery 同机同服务，默认按 delivery 网址推兄弟端点。"""
+    """observe and delivery are one service on one machine; derive the sibling from delivery."""
     base = (delivery_url or "").rstrip("/")
     if base.endswith("/delivery"):
         return base[: -len("/delivery")] + "/observe"
@@ -73,9 +73,9 @@ def _derive_observe_url(delivery_url: str) -> str:
 AB_OBSERVE_URL = (os.environ.get("AB_OBSERVE_URL", "").strip()
                   or _derive_observe_url(AB_DELIVERY_URL))
 
-# Bridge 的 observe 返回的是按 MCP 线上格式（camelCase）写的 content 数组；
-# 这里把它还原成原生 content block 对象（尤其 video 的 ImageContent），
-# 绝不能当 JSON 文本回给模型。
+# The Bridge's observe returns a content array written in the MCP wire format (camelCase);
+# we restore it into native content block objects here (especially the ImageContent for
+# video) and must never hand it back to the model as JSON text.
 _CONTENT_BLOCK_ADAPTER = TypeAdapter(ContentBlock)
 
 
@@ -85,7 +85,7 @@ def _to_content_blocks(blocks: list) -> list:
         try:
             out.append(_CONTENT_BLOCK_ADAPTER.validate_python(b))
         except Exception:
-            # 单个块不可解析也不能吞掉整次调用；降级成文本并保留可读信息。
+            # One unparseable block must not swallow the call; degrade to text, keep the info.
             out.append(TextContent(type="text", text=json.dumps(b, ensure_ascii=False)[:2000]))
     return out
 
@@ -103,8 +103,8 @@ mcp = MCPServer(
 )
 
 
-# --------------------------------------------------- artifact MIME 分流
-# 产物落库只存字节、不存 MIME，所以这里按「文件头优先、扩展名兜底」识别图片。
+# ------------------------------------------------ artifact MIME branching
+# Artifacts store bytes only, no MIME, so images are detected header-first, extension as fallback.
 _IMAGE_MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "png"),
     (b"\xff\xd8\xff", "jpeg"),
@@ -115,14 +115,14 @@ _RASTER_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
 
 
 class OpenAIFileParam(BaseModel):
-    """ChatGPT 的 openai/fileParams 文件引用。
+    """ChatGPT's openai/fileParams file reference.
 
-    形状由 OpenAI 规范钉死，不是随便定的：
-      - 四个属性必须全部声明（mime_type / file_name 可以不 required）；
-      - required 必须**正好**是 ["download_url", "file_id"]；
-      - 多声明一个 required 属性、或把可选属性标成 required，Scan Tools 直接拒收。
+    The shape is pinned by the OpenAI spec, it is not arbitrary:
+      - all four properties must be declared (mime_type / file_name may be non-required);
+      - required must be **exactly** ["download_url", "file_id"];
+      - one extra required property, or an optional one marked required, and Scan Tools rejects it.
 
-    所以这里用 extra="forbid" + 显式 Optional，让生成的 JSON Schema 正好落进规范。
+    So extra="forbid" plus explicit Optional keeps the generated JSON Schema on spec.
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -136,7 +136,7 @@ class OpenAIFileParam(BaseModel):
 
 
 def _sniff_image(data: bytes) -> str | None:
-    """只按真实文件头判图片格式。输入端不能用扩展名兜底（那是给旧产物分流的）。"""
+    """Sniff the image format from the real file header only. Input side: no extension fallback."""
     head = bytes(data[:16])
     for magic, fmt in _IMAGE_MAGIC:
         if head.startswith(magic):
@@ -147,7 +147,7 @@ def _sniff_image(data: bytes) -> str | None:
 
 
 def _image_format(name: str, data: bytes) -> str | None:
-    """命中返回 Image() 要的 format（png/jpeg/gif/webp），否则 None。"""
+    """Returns the format Image() wants (png/jpeg/gif/webp) on a hit, otherwise None."""
     head = bytes(data[:16])
     for magic, fmt in _IMAGE_MAGIC:
         if head.startswith(magic):
@@ -165,8 +165,8 @@ _IMAGE_MIME = {"png": "image/png", "jpeg": "image/jpeg",
                "gif": "image/gif", "webp": "image/webp"}
 _IMAGE_EXT = {"png": "png", "jpeg": "jpg", "gif": "gif", "webp": "webp"}
 
-# 输入文件的 MIME/扩展名：图片要按真实文件头校验（视觉链路依赖它），
-# 其余文件没有可用的万能魔数，按声明/扩展名记账后原样落盘交给执行体。
+# Input file MIME/extension: images are verified by real file header (the vision path needs
+# it); other types have no universal magic, so record the declared type/extension and store as-is.
 _MIME_ALIASES = {
     "image/jpg": "image/jpeg",
     "text/plain": "text/plain",
@@ -187,7 +187,7 @@ _EXT_MIME = {
     "mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm", "mkv": "video/x-matroska",
     "srt": "application/x-subrip", "vtt": "text/vtt",
 }
-# 会被执行体当文本读的类型：落盘后原样可用，无需模型"看图"能力。
+# Types the executor reads as text: usable as-is once on disk, no model "vision" needed.
 _TEXT_MIME_PREFIXES = ("text/",)
 _TEXT_MIME_EXTRAS = {
     "application/json", "application/x-ndjson", "application/xml",
@@ -201,33 +201,33 @@ def _canonical_mime(raw: str) -> str:
     return _MIME_ALIASES.get(mime, mime)
 
 
-# ------------------------------------------- 远端文件拉取（ChatGPT 附件直传）
+# ------------------------------------- remote file fetch (ChatGPT attachment passthrough)
 #
-# ChatGPT 通过 openai/fileParams 传过来的不是字节，是 {download_url, file_id,
-# mime_type, file_name}。download_url 只在本次工具调用期间有效，所以必须在调用
-# 内部同步把字节取回来落盘 —— 存个 URL 等节点稍后再拉，届时 100% 已过期。
+# What ChatGPT passes through openai/fileParams is not bytes but {download_url, file_id,
+# mime_type, file_name}. download_url is only valid during this tool call, so the bytes must be
+# pulled to disk synchronously inside it — store the URL and fetch later and it is always expired.
 #
-# 这是唯一"由外部 URL 触发本机出网"的地方，所以按 SSRF 处理，不做"信任上游"的简化：
+# The only spot where an external URL makes this box reach out, so SSRF rules apply, no shortcuts:
 FILE_FETCH_TIMEOUT = float(os.environ.get("PAD_FILE_FETCH_TIMEOUT", "120"))
 FILE_FETCH_CONNECT_TIMEOUT = float(os.environ.get("PAD_FILE_FETCH_CONNECT_TIMEOUT", "10"))
 FILE_FETCH_MAX_REDIRECTS = int(os.environ.get("PAD_FILE_FETCH_MAX_REDIRECTS", "3"))
-# 域名不做限制：ChatGPT 的附件可能落在 oaiusercontent.com、openai.com，也可能落在
-# 它自有的 Azure Blob（实测 2026-10-26 的 MP3 来自
-# oaisdmntprwestus3.blob.core.windows.net）。写死白名单的结果就是自己人拦自己人，
-# 而且 CDN 换了还要改代码。所以只约束"协议 + 不能是内网目标"。
+# No domain restriction: ChatGPT attachments land on oaiusercontent.com, openai.com, or its own
+# Azure Blob (the 2026-10-26 MP3 came from oaisdmntprwestus3.blob.core.windows.net). A hardcoded
+# allowlist only blocks our own traffic, and every CDN move means editing code. So we constrain
+# "protocol + not an internal target" only.
 #
-# 真正的安全边界不是"信任哪些域名"，而是"不许打内网"：SSRF 的危害在于借服务端
-# 之手访问 127.0.0.1 / 10.x / 169.254.169.254 这类目标，跟外网域名是哪个无关。
-# 所以下面保留：只允许 https、DNS 解析后拒绝内网/回环/保留地址、逐跳重定向重校验、
-# 体积与时间上限。需要收紧时用 PAD_FILE_URL_HOSTS 显式给白名单（留空=不限制）。
+# The real boundary is not "which domains to trust" but "never hit the internal network": SSRF
+# harm is using the server to reach 127.0.0.1 / 10.x / 169.254.169.254, whatever the public domain.
+# So keep: https only, reject private/loopback/reserved after DNS resolution, re-validate each
+# redirect hop, plus size and time caps. Need it tighter: pass PAD_FILE_URL_HOSTS (empty = any).
 _DEFAULT_FILE_URL_HOSTS = ""
 
 
 def _file_url_hosts() -> tuple:
-    """可选白名单。默认空 = 不限制域名（只受 https + 非内网约束）。
+    """Optional allowlist. Empty by default = no domain restriction (only https + non-internal).
 
-    要收紧就设 PAD_FILE_URL_HOSTS（逗号分隔）；元素以 `*.` 开头按后缀匹配，
-    否则要求宿主完全相同。运行时读，便于测试覆盖。
+    To tighten, set PAD_FILE_URL_HOSTS (comma separated); `*.` prefixes match by suffix, anything
+    else must match the host exactly. Read at runtime so tests can override it.
     """
     raw = os.environ.get("PAD_FILE_URL_HOSTS", _DEFAULT_FILE_URL_HOSTS)
     return tuple(s.strip().lower() for s in raw.split(",") if s.strip())
@@ -235,7 +235,7 @@ def _file_url_hosts() -> tuple:
 
 def _host_allowed(host: str, hosts: tuple) -> bool:
     if not hosts:
-        return True                      # 默认不限制域名
+        return True                      # no domain restriction by default
     for pattern in hosts:
         if pattern.startswith("*."):
             if host == pattern[2:] or host.endswith("." + pattern[2:]):
@@ -252,17 +252,17 @@ def _flag(name: str) -> bool:
 
 
 class FileFetchError(ValueError):
-    """拉取远端文件失败（网络/校验/超限）。带上给人看的原因。"""
+    """Remote file fetch failed (network/validation/over limit). Carries a human-readable reason."""
 
 
 def _check_url_allowed(url: str) -> str:
-    """校验一次下载 URL 是否可拉：https + 域名白名单 + 非内网 IP。
+    """Check whether a download URL is fetchable: https + domain allowlist + non-internal IP.
 
-    每个重定向都要重新过这一关 —— 只校验首个 URL 的话，一个 302 指向
-    http://127.0.0.1:8791/ 就能把内网服务的响应当附件存下来。
+    Every redirect re-runs this gate — validating only the first URL lets one 302 to
+    http://127.0.0.1:8791/ store the internal service's response as an attachment.
     """
-    # 两个"只给单元测试"的开关：桩服务跑在 127.0.0.1 且是明文 http。
-    # 生产环境不设它们，等于 https + 拒绝内网，SSRF 防护完整。
+    # Two unit-test-only switches: the stub server runs on 127.0.0.1 over plain http. Unset in
+    # production, which means https + internal rejection, i.e. full SSRF protection.
     allow_http = _flag("PAD_FILE_ALLOW_HTTP")
     allow_loopback = _flag("PAD_FILE_ALLOW_LOOPBACK")
     hosts = _file_url_hosts()
@@ -277,7 +277,7 @@ def _check_url_allowed(url: str) -> str:
     if not _host_allowed(host, hosts):
         raise FileFetchError(
             f"下载地址主机 {host} 不在 PAD_FILE_URL_HOSTS 白名单内（该开关默认空=不限制）。")
-    # 解析后逐个检查：域名白名单挡不住 DNS 指着内网的情况。
+    # Check every resolved address: an allowlist cannot stop DNS pointing at the internal net.
     try:
         infos = socket.getaddrinfo(host, parts.port or (443 if scheme == "https" else 80),
                                    proto=socket.IPPROTO_TCP)
@@ -290,17 +290,17 @@ def _check_url_allowed(url: str) -> str:
         if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
                 or ip.is_multicast or ip.is_unspecified):
             if allow_loopback and (ip.is_loopback or ip.is_private):
-                continue        # 单元测试专用；生产环境此开关不存在
+                continue        # unit tests only; this switch does not exist in production
             raise FileFetchError(f"下载地址解析到内网/保留地址，拒绝拉取: {ip}")
     return url
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """禁止自动跟随重定向。
+    """Forbid automatic redirect following.
 
-    urllib 默认会自动顺着 302/307 走完，这意味着"每一跳重新校验"永远看不到
-    中间的 URL —— 一个指向内网或 file:// 的跳转就被静默跟过去了。这里把它变成
-    一个普通 3xx 错误，交给上层手动跟并逐跳校验。
+    urllib follows 302/307 by itself, so "re-validate every hop" never sees the intermediate URL
+    — a redirect to the internal network or file:// is silently followed. Here it becomes an
+    ordinary 3xx error the caller walks by hand, validating each hop.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -308,10 +308,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _fetch_remote_file(url: str, max_bytes: int) -> tuple[bytes, str]:
-    """同步取回远端文件字节，返回 (data, content_type)。
+    """Synchronously fetch remote file bytes and return (data, content_type).
 
-    边读边计数，超过上限立刻中止 —— 不先下完再判断，否则一个几十 GB 的响应
-    就已经把内存和带宽吃掉了。重定向手动跟随，每一跳重新做安全检查。
+    Count while reading, abort the moment the cap is hit — don't download then judge, or a tens of
+    GB response has already eaten the memory and bandwidth. Redirects are walked by hand, per hop.
     """
     current = _check_url_allowed(url)
     for hop in range(FILE_FETCH_MAX_REDIRECTS + 1):
@@ -320,15 +320,15 @@ def _fetch_remote_file(url: str, max_bytes: int) -> tuple[bytes, str]:
             "Accept": "*/*",
         })
         try:
-            # 关键：必须禁掉自动跟跳。urllib 默认会自己顺着 302 走，那样下面手写的
-            # "每一跳重新校验" 根本不会触发 —— 一个 302 就能绕过内网拦截。
+            # Critical: disable auto-follow. urllib would follow 302 itself and the hand-written
+            # "re-validate every hop" below would never fire — one 302 bypasses the internal block.
             opener = urllib.request.build_opener(_NoRedirect)
             resp = opener.open(req, timeout=FILE_FETCH_CONNECT_TIMEOUT)
         except urllib.error.HTTPError as exc:
             if exc.code in (301, 302, 303, 307, 308) and exc.headers.get("Location"):
                 if hop >= FILE_FETCH_MAX_REDIRECTS:
                     raise FileFetchError("下载地址重定向次数过多") from exc
-                # 每一跳都重新过安全校验：否则一个 302 就能把内网服务当附件存下来。
+                # Re-validate every hop: else a 302 stores an internal response as an attachment.
                 current = _check_url_allowed(
                     urllib.parse.urljoin(current, exc.headers["Location"]))
                 continue
@@ -373,10 +373,10 @@ def _is_text_mime(mime: str) -> bool:
 
 
 def _normalize_file_entry(item: dict, index: int, names: set, total: int) -> dict:
-    """把一个文件项规整成落盘条目（含 MIME/扩展名判定与体积校验）。
+    """Normalize a file item into an on-disk entry (MIME/extension detection and size checks).
 
-    来源无关：base64 解码后的字节、远端拉回的字节都走这里，保证两条入口的
-    校验规则一模一样（尤其"声称是图片就必须真是图片"这条）。
+    Source-agnostic: base64-decoded bytes and remote-fetched bytes both land here, so the two
+    entry points enforce identical rules (notably "claiming an image means it really is one").
     """
     data = bytes(item["data"])
     if not data:
@@ -390,7 +390,7 @@ def _normalize_file_entry(item: dict, index: int, names: set, total: int) -> dic
     name_ext = raw_name.replace("\\", "/").split("/")[-1].rsplit(".", 1)
     name_ext = name_ext[-1].lower() if len(name_ext) == 2 else ""
     declared = _canonical_mime(item.get("mime_type"))
-    # 声明成 octet-stream / 不写，就让文件头说了算（老调用方常这么传）。
+    # Declared octet-stream / missing → let the file header decide (older callers often do this).
     explicit = "" if declared in ("", "application/octet-stream") else declared
     fmt = _sniff_image(data)
     if fmt:
@@ -400,7 +400,7 @@ def _normalize_file_entry(item: dict, index: int, names: set, total: int) -> dic
         declared = actual_mime
         ext = _IMAGE_EXT[fmt]
     elif explicit.startswith("image/") or (not explicit and name_ext in _RASTER_EXTS):
-        # 声称是图片、内容却不是（或按扩展名说是图片、内容不是）——不能放过去。
+        # Claims an image but the content is not (or the extension does) — this cannot pass.
         raise ValueError(f"第 {index} 个文件声称是图片，但文件内容不是支持的 PNG/JPEG/GIF/WebP")
     else:
         declared = explicit or _guess_mime(raw_name) or "application/octet-stream"
@@ -421,17 +421,17 @@ def _normalize_file_entry(item: dict, index: int, names: set, total: int) -> dic
     names.add(key)
     entry = {"name": base, "mime_type": declared, "data": data}
     if _is_text_mime(declared):
-        # 文本类顺带带一小段预览：上层不用为"看一眼写了什么"再走一轮下载。
+        # Text types also carry a short preview, so the upper layer needn't re-download to peek.
         entry["preview"] = data[:2000].decode("utf-8", errors="replace")
     return entry
 
 
 def _from_base64(item: dict, index: int) -> dict:
-    """老路径：调用方把字节 base64 塞进参数。"""
+    """Old path: the caller stuffs base64 bytes into an argument."""
     encoded = (item.get("data_base64") or item.get("data_url")
                or item.get("content_base64"))
     if not isinstance(encoded, str) or not encoded.strip():
-        # 最常见的误用：把本地路径当成"文件名"塞进来。说清楚它为什么不行。
+        # The most common misuse: passing a local path as the "filename". Explain why it fails.
         hint = ""
         for key in ("path", "name", "file", "filename"):
             val = item.get(key)
@@ -467,36 +467,36 @@ def _from_base64(item: dict, index: int) -> dict:
 
 
 def _from_file_ref(item: dict, index: int) -> dict:
-    """新路径：ChatGPT 的 openai/fileParams 文件引用，带 download_url 自己取字节。
+    """New path: ChatGPT's openai/fileParams reference; we fetch the bytes from download_url.
 
-    download_url 只在本次调用期间有效，所以这里必须同步取完；绝不能把 URL 存进
-    任务里让节点稍后再拉（那时必然过期）。
+    download_url is only valid during this call, so it must be fetched synchronously; never
+    store the URL in the task and let the node pull it later (by then it is always expired).
     """
     url = item.get("download_url") or item.get("url")
     if not isinstance(url, str) or not url.strip():
         raise ValueError(f"第 {index} 个输入文件缺少 download_url")
     expected = db.INPUT_FILE_MAX_BYTES
     data, fetched_mime = _fetch_remote_file(url.strip(), expected)
-    # 名字优先用 ChatGPT 给的原名；拿不到就用 file_id，最后才 input-N。
+    # Prefer the original name ChatGPT gave us; fall back to file_id, and only then input-N.
     name = item.get("file_name") or item.get("name")
     if not name and item.get("file_id"):
         name = str(item["file_id"])
-    # MIME 以声明为准但让实测兜底：ChatGPT 的 mime_type 有时是空的，
-    # 而 HTTP 头常给 application/octet-stream，两者都不该盖掉真实文件头。
+    # Declared MIME leads but measurement backstops: ChatGPT's mime_type is sometimes empty and
+    # HTTP headers often say octet-stream; neither should override the real file header.
     declared = _canonical_mime(item.get("mime_type")) or fetched_mime
     return {"name": name, "mime_type": declared, "data": data}
 
 
 def _prepare_input_files(files) -> list[dict]:
-    """验证 MCP/REST 传入的文件，统一解码/拉取后交给任务输入存储。
+    """Validate files from MCP/REST, decode/fetch them uniformly, hand them to task input storage.
 
-    每个元素可以是三种形态之一：
-      1. {name, mime_type, data_base64}        —— 老路径，字节随参数走
-      2. {download_url, file_id, mime_type, file_name} —— ChatGPT 附件引用（fileParams）
-      3. {path}                                —— 明确拒绝：PAD 读不到调用方的磁盘
+    Each element may be one of three shapes:
+      1. {name, mime_type, data_base64}        — the old path, bytes travel with the argument
+      2. {download_url, file_id, mime_type, file_name} — a ChatGPT attachment reference (fileParams)
+      3. {path}                              — rejected outright: PAD cannot read the caller's disk
 
-    图片（PNG/JPEG/GIF/WebP）必须由真实文件头确认，声明与实际不符直接拒 ——
-    上层看到"这是图片"就会当图片用，头是假的等于骗它。
+    Images (PNG/JPEG/GIF/WebP) must be confirmed by the real file header, and a declaration that
+    disagrees is rejected — the upper layer uses "this is an image" as truth, so a fake header lies.
     """
     if files is None:
         return []
@@ -507,14 +507,14 @@ def _prepare_input_files(files) -> list[dict]:
 
     prepared, total, names = [], 0, set()
     for i, item in enumerate(files, 1):
-        # 两种来源：MCP 的 files 参数是 pydantic 模型，REST/老路径是原始 dict，
-        # 这里统一拍平，后面的校验只认 dict。
+        # Two sources: MCP's files parameter yields pydantic models, REST / the old path yields
+        # plain dicts. Flatten both to dicts here; validation below only knows dicts.
         if isinstance(item, BaseModel):
             item = item.model_dump(exclude_none=True)
         if not isinstance(item, dict):
             raise ValueError(f"第 {i} 个输入文件必须是对象")
-        # /mnt/data 之类的本地路径 PAD 根本读不到，早点说清楚，别让它变成
-        # "看起来传了、实际空文件"或者被当成 base64 去 decode。
+        # Local paths like /mnt/data are unreadable from PAD; say so early instead of letting it
+        # become "looks passed, actually empty" or get base64-decoded.
         if item.get("path") and not (item.get("data_base64") or item.get("download_url")):
             raise ValueError(
                 f"第 {i} 个输入文件只给了 path（{item.get('path')!r}）。PAD 运行在服务器上，"
@@ -533,9 +533,9 @@ def _prepare_input_files(files) -> list[dict]:
 
 
 def _attachment_disposition(name: str) -> str:
-    """按 RFC 5987 构造 Content-Disposition：中文名走 filename*，同时给 ASCII 兜底。
+    """Content-Disposition per RFC 5987: a Chinese name goes in filename*, plus an ASCII fallback.
 
-    HTTP 头只接受 latin-1，直接把「季度报告.pdf」拼进 filename="..." 会让节点下载 500。
+    HTTP headers take latin-1 only; a Chinese name in filename="..." makes the download 500.
     """
     ascii_name = name.encode("ascii", "ignore").decode().strip() or "input"
     return (f'attachment; filename="{ascii_name}"; '
@@ -543,10 +543,10 @@ def _attachment_disposition(name: str) -> str:
 
 
 def _safe_stem(raw: str, limit: int = 60) -> str:
-    """保留可读文件名（中文也留），只剔掉路径分隔符、控制字符和会毁 URL/落盘的符号。
+    """Keep the filename readable (Chinese too); strip only path separators and control chars.
 
-    老实现是 ASCII-only 白名单，结果「季度报告.pdf」变成「input-1.pdf」——
-    执行体在 inputs/ 里看到一堆 input-N，等于把上下文丢了。现在只做必要清洗。
+    The old implementation was an ASCII-only allowlist, so a Chinese filename became "input-1.pdf" —
+    the executor saw a pile of input-N in inputs/ and lost the context. Now only necessary cleaning.
     """
     stem = str(raw or "").replace("\\", "/").split("/")[-1]
     stem = "".join(c for c in stem if c.isprintable() and c not in '/\\:*?"<>|')
@@ -554,12 +554,12 @@ def _safe_stem(raw: str, limit: int = 60) -> str:
     return stem[:limit]
 
 
-# 兼容老调用名（图片时代的方法名）。
+# Compatible with the old call name (the method name from the image era).
 _prepare_input_images = _prepare_input_files
 
 
 def _artifact_chunk(task_id, name, offset: int, limit: int) -> dict:
-    """文本产物→原分页 dict；图片产物→提示改用 get_artifact（别把二进制 decode 成乱码）。"""
+    """Text artifact → paginated dict; image artifact → use get_artifact (no binary decode)."""
     blob = db.read_artifact_bytes(task_id, name)
     if "error" not in blob and _image_format(blob["meta"]["name"], blob["data"]):
         return {"name": blob["meta"]["name"], "bytes": blob["meta"]["bytes"],
@@ -572,14 +572,14 @@ def _artifact_chunk(task_id, name, offset: int, limit: int) -> dict:
 
 @mcp.tool()
 def get_digest(recent_limit: int = 10) -> dict:
-    """全局态势。nodes 里是你能指挥的每一台机器：
-       - description 说明这台机器是干嘛的
-       - capabilities 是它能接的活（下发任务时用这个名字）
-       - capabilities_detail 是每个能力的中文解释
-       - input_files_supported 为 true 的节点已支持随任务下发文件（旧名 input_images_supported）
-       - recent_tasks 是它最近的任务，按 updated_at 时间倒序（每条给 task_id/status/updated_at），
-         用 recent_limit 控制每台机取几条（默认 10）。看细节再用 get_task(task_id)。
-       另外还给出正在跑的任务数量和今日完成数。"""
+    """Global picture. nodes are the machines you can direct:
+       - description says what this machine is for
+       - capabilities are the jobs it takes (submit with this name)
+       - capabilities_detail explains each capability in Chinese
+       - nodes with input_files_supported true take files with a task (old: input_images_supported)
+       - recent_tasks are its latest tasks by updated_at desc (task_id/status/updated_at each);
+         recent_limit controls how many per machine (default 10). Details: get_task(task_id).
+       Also reports how many tasks are running and how many finished today."""
     return db.digest(server_bundle=SERVER_BUNDLE, recent_limit=recent_limit)
 
 
@@ -590,30 +590,30 @@ def submit_task(capability: str, goal: str, constraints: list | None = None,
                 files: list[OpenAIFileParam] = Field(default_factory=list),
                 input_files: list[dict] | None = None,
                 input_images: list[dict] | None = None) -> dict:
-    """下发一个任务。capability 从 get_digest 的节点列表里挑，不要指定机器名。
-    goal 写清楚要什么、不要写步骤；acceptance 写能机器判定的验收条件。
+    """Submit a task. Pick capability from the get_digest node list, never a machine name.
+    goal says what you want, not the steps; acceptance holds machine-checkable criteria.
 
-    随任务带文件有两条路，按情况选一条即可：
+    There are two ways to ship files with a task, use whichever fits:
 
-    1) files —— 用户在 ChatGPT 里上传的附件（MP3/MP4/PDF/图片/表格…）。
-       把附件放进 files 数组，服务端会自己从 download_url 取回原始字节，
-       模型不需要、也不应该把文件内容读进上下文。
-    2) input_files —— 调用方已经拿到字节时用，每项 {name, mime_type, data_base64}
-       （也接受完整 data:...;base64,... data URL）。
+    1) files — attachments the user uploaded in ChatGPT (MP3/MP4/PDF/image/spreadsheet…).
+       Put them in the files array; the server fetches the raw bytes from download_url itself,
+       so the model need not and should not read file contents into context.
+    2) input_files — when the caller already has the bytes, each {name, mime_type, data_base64}
+       (a full data:...;base64,... data URL is also accepted).
 
-    两条路共用同一套校验与落盘：图片必须文件头与声明一致；其它类型原样保留。
-    节点会在任务工作目录的 inputs/ 下收到文件，执行提示里列出路径与 sha256。
-    最多 8 个文件，单个 ≤10 MiB，合计 ≤15 MiB（服务端可调）。
+    Both paths share the same checks and on-disk handling: an image's header must match what it
+    claims, other types are kept as-is. The node gets files under inputs/ and the execution prompt
+    lists their paths and sha256. At most 8 files, ≤10 MiB each, ≤15 MiB total (server tunable).
 
-    input_images 是历史参数名，等价于 input_files。"""
+    input_images is a historical parameter name, equivalent to input_files."""
     merged = list(files or []) + list(input_files if input_files is not None
                                      else (input_images or []))
     try:
         prepared = _prepare_input_files(merged)
     except ValueError as exc:
-        # 关键：不转成 ToolError 的话，SDK 会把异常当"崩溃"，模型只收到
-        # 「Error executing tool submit_task」——真实原因（比如哪个域名被拦、
-        # 哪个字段不对）全留在服务器日志里，调用方只能看到 INVALID_ARGUMENT。
+        # Critical: without ToolError the SDK treats this as a crash and the model only sees
+        # 「Error executing tool submit_task」 — the real reason (blocked domain, wrong field)
+        # stays in the server log and the caller only gets INVALID_ARGUMENT.
         raise ToolError(f"文件接收失败：{exc}") from exc
     return db.submit_task(capability, goal, constraints, acceptance,
                           deadline or None, priority, created_by="chatgpt",
@@ -622,12 +622,12 @@ def submit_task(capability: str, goal: str, constraints: list | None = None,
 
 @mcp.tool(meta={"openai/fileParams": ["files"]})
 def probe_file_upload(files: list[OpenAIFileParam]) -> dict:
-    """文件接收自检：把 ChatGPT 里上传的附件真正收下来，报告字节数与 SHA-256。
+    """File intake self-check: really receive the ChatGPT attachment, report bytes and SHA-256.
 
-    用途只是验证"附件能不能交到服务端"。真实干活请用 submit_task 的 files 参数。
-    调用方式：用户上传文件后，把附件放进 files 参数直接调用，不需要读文件内容。
-    返回每个文件的 name / mime_type / bytes / sha256 / 落盘路径片段，可用来
-    和本地源文件比对（SHA-256 相同即字节完全一致）。"""
+    Only verifies "can an attachment reach the server". Real work: use submit_task's files.
+    Call it by putting the uploaded attachment in files; no need to read the contents.
+    Returns name / mime_type / bytes / sha256 / on-disk path per file, to compare with the
+    local source (identical SHA-256 means byte-identical)."""
     if not files:
         return {"ok": False, "error": "没有收到文件引用，files 为空"}
     try:
@@ -652,24 +652,24 @@ def probe_file_upload(files: list[OpenAIFileParam]) -> dict:
 
 @mcp.tool()
 def close_task(task_id: str, reason: str = "") -> dict:
-    """取消任务；节点会终止对应的本地执行进程组。"""
+    """Cancel a task; the node terminates the corresponding local execution process group."""
     return db.close_task(task_id, reason, by="chatgpt")
 
 
 @mcp.tool()
 def get_task(task_id: str, artifact: str = "", offset: int = 0, limit: int = 8000) -> dict:
-    """查一个任务：状态、约束、验收条件，以及它下面的进度和最终报告。
+    """Inspect a task: status, constraints, acceptance, plus progress and the final report.
 
-    读报告就看 reports[].payload：
-      - payload.report         验收汇报正文（大活做成什么、每件小事各自如何）
-      - payload.summary        一行结论
-      - payload._acceptance_check  逐条验收的覆盖度；missing 非空说明哪几条没被回答
-      - payload.artifacts      产物清单（含未上传的本地路径/大小/行数/schema）
+    Read reports[].payload:
+      - payload.report         acceptance report body (what the job became, how each part went)
+      - payload.summary        one-line conclusion
+      - payload._acceptance_check  per-item acceptance coverage; missing lists unanswered ones
+      - payload.artifacts      artifact list (local paths/sizes/row counts/schema if not uploaded)
 
-    artifact 传产物名（见返回的 artifacts[].name）时，只返回该产物的一段（默认 8000 字节），
-    翻页用 offset；图片产物用 get_artifact。
-    input_files[]（旧别名 input_images[]）是随任务下发的输入文件元数据，不含字节；
-    要看内容用 get_input_file(task_id, name)。"""
+    With artifact (a name from artifacts[].name) only one chunk comes back (8000 bytes default);
+    page with offset. For image artifacts use get_artifact.
+    input_files[] (old alias input_images[]) is the input file metadata, without bytes —
+    use get_input_file(task_id, name) for content."""
     view = db.task_view(task_id) or {"error": "not_found", "task_id": task_id}
     if artifact and "error" not in view:
         view["artifact_chunk"] = _artifact_chunk(task_id, artifact, offset, limit)
@@ -678,16 +678,16 @@ def get_task(task_id: str, artifact: str = "", offset: int = 0, limit: int = 800
 
 @mcp.tool()
 def get_artifact(task_id: str, name: str = "", offset: int = 0, limit: int = 8000) -> dict | Image:
-    """打开一个任务的产物看正文（"开箱看货"）。get_task 告诉你有什么，这个接口把货打开。
+    """Open an artifact's content ("open the box"). get_task says what exists, this opens it.
 
-    产物名 name 从 get_task 返回的 artifacts[].name 取；留空则只列出该任务有哪些产物，
-    不返回正文（name 写错时也会把可用名字列出来）。
+    Take name from artifacts[].name in get_task; leaving it empty lists the task's artifacts and
+    returns no content (a wrong name also lists the available names).
 
-    图片产物（image/png、image/jpeg、image/gif、image/webp）直接返回原生图片内容
-    （MCP ImageContent），上层可视觉读取，不分页。
+    Image artifacts (image/png, image/jpeg, image/gif, image/webp) return native image content
+    directly (MCP ImageContent), which the upper layer can read visually; no pagination.
 
-    文本产物按字节分页：返回 content 是这一段的文本，next_offset 非空就带上下一个 offset 继续翻，
-    offset 从 0 开始。默认每次 8000 字节，上限 200000。整包原始数据不搬进上下文，要看哪段取哪段。"""
+    Text artifacts paginate by bytes: content is this chunk, a non-empty next_offset continues from
+    there, starting at 0. 8000 bytes per call by default, up to 200000 — never the whole blob."""
     view = db.task_view(task_id)
     if view is None:
         return {"error": "not_found", "task_id": task_id}
@@ -699,20 +699,20 @@ def get_artifact(task_id: str, name: str = "", offset: int = 0, limit: int = 800
         return blob
     fmt = _image_format(blob["meta"]["name"], blob["data"])
     if fmt:
-        # 图片走原生 content block；二进制分片无意义，decode 出来只会是乱码。
+        # Images go back as native content blocks; a binary slice decodes only into garbage.
         return Image(data=blob["data"], format=fmt)
     return db.read_artifact(task_id, name, offset, limit)
 
 
 @mcp.tool()
 def get_input_file(task_id: str, name: str = "", offset: int = 0, limit: int = 8000):
-    """回看一个任务随件下发的输入文件（get_task 的 input_files[] 里有什么，这里打开）。
+    """Read back an input file shipped with a task (open what get_task's input_files[] lists).
 
-    name 留空只列该任务有哪些输入文件（name/mime_type/bytes/sha256）。
-    图片返回原生图片内容（MCP ImageContent），可直接视觉读取，不分页。
-    文本类（text/*、json、csv、md、srt…）按字节分页返回 content + next_offset。
-    其它二进制（pdf/zip/mp4…）不分页，返回元数据 + 提示：要就交给节点处理，
-    不要把二进制塞进上下文。"""
+    An empty name only lists the input files (name/mime_type/bytes/sha256).
+    Images return native image content (MCP ImageContent), readable visually, no pagination.
+    Text types (text/*, json, csv, md, srt…) paginate by bytes, returning content + next_offset.
+    Other binaries (pdf/zip/mp4…) don't paginate: metadata plus a hint to let the node handle it,
+    never stuff binary into context."""
     view = db.task_view(task_id)
     if view is None:
         return {"error": "not_found", "task_id": task_id}
@@ -743,17 +743,17 @@ def get_input_file(task_id: str, name: str = "", offset: int = 0, limit: int = 8
 
 @mcp.tool()
 def get_artifact_delivery(task_id: str, name: str, ttl_sec: int | None = None) -> dict:
-    """把一个 PAD 已登记的产物换成短期签名的 HTTPS 交付链接（给人点开/下载用）。
+    """Turn a registered PAD artifact into a short-lived signed HTTPS delivery link (for a human).
 
-    返回 pad.artifact/v2 契约，其中：
-      - delivery.open_url      浏览器内联打开/播放
-      - delivery.download_url  强制另存为文件
-      - delivery.sha256 / size / mime_type  校验用
-    零注册：不用预先建 *.artifact.json，也不会新建 worker 任务。task_id / name 从
-    get_task 返回的 artifacts[].name 取。PAD 服务端内部调用 Artifact Bridge 完成
-    「确认已登记 → 惰性物化 → 签名」，Bridge 密钥不经过本工具，也不会返回给调用方。
+    Returns the pad.artifact/v2 contract, where:
+      - delivery.open_url      open/play inline in the browser
+      - delivery.download_url  force save-as
+      - delivery.sha256 / size / mime_type  for verification
+    Zero registration: no *.artifact.json to create, no worker task. task_id / name come from
+    artifacts[].name in get_task. PAD calls the Artifact Bridge internally to "confirm registered
+    → lazily materialize → sign"; the Bridge key never passes through or comes back to the caller.
 
-    ttl_sec 可选，签名有效期秒数（Bridge 默认 3600）。"""
+    ttl_sec is optional, the signature lifetime in seconds (Bridge default 3600)."""
     if not AB_DELIVERY_KEY:
         return {"error": "delivery_unavailable",
                 "detail": "PAD server has no AB_DELIVERY_KEY configured."}
@@ -782,19 +782,19 @@ def get_artifact_delivery(task_id: str, name: str, ttl_sec: int | None = None) -
 def get_artifact_observe(task_id: str, name: str, frames: int | None = None,
                          ttl_sec: int | None = None
                          ) -> list[TextContent | ImageContent | ResourceLink | EmbeddedResource]:
-    """把一个 PAD 已登记的产物取回成「模型可直接观察」的原生内容（一次调用，按需）。
+    """Fetch a registered PAD artifact as native content the model can observe directly (on demand).
 
-    图片产物（image/*）返回原生 MCP 图片内容，可直接视觉读取。
-    视频产物（video/*）返回从视频真实字节按时间点解码出的若干帧原生图片内容
-    （每帧前带 t=…s 文本），外加一个指向完整文件的 resource_link；frames 控制抽
-    几帧（默认服务端定）。
-    其它文件返回 resource_link（小文件另附内嵌内容）。
+    Image artifacts (image/*) return native MCP image content, readable visually.
+    Video artifacts (video/*) return frames decoded from the real bytes at points in time as native
+    image content (each preceded by a t=…s text), plus a resource_link to the whole file; frames
+    sets how many are extracted (default decided server-side).
+    Other files return a resource_link (small ones also embed content).
 
-    task_id / name 从 get_task 返回的 artifacts[].name 取。零注册：不用预先建
-    *.artifact.json，也不会新建 worker 任务。PAD 服务端内部把请求转给产物观察面
-    完成「确认已登记 → 惰性物化 → 解码抽帧」，内部密钥不会经过本工具、也不会返回。
+    task_id / name come from artifacts[].name in get_task. Zero registration: no *.artifact.json
+    to create, no worker task. PAD forwards the request to the observe plane, which does "confirm
+    registered → lazily materialize → decode frames"; the internal key never passes through or back.
 
-    ttl_sec 可选，返回的完整文件链接有效期秒数。"""
+    ttl_sec is optional, the lifetime of the returned full-file link in seconds."""
     if not AB_DELIVERY_KEY:
         return CallToolResult(content=[TextContent(type="text", text=json.dumps(
             {"error": "observe_unavailable",
@@ -856,7 +856,7 @@ async def bad_request(request, exc):
     return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
-# ---- LD 侧 -----------------------------------------------------------------
+# ---- LD side ----------------------------------------------------------------
 
 @app.post("/pad/{key}/api/register")
 async def api_register(payload: dict):
@@ -865,7 +865,7 @@ async def api_register(payload: dict):
     out = db.register_node(payload["node_id"], payload.get("role", ""),
                            payload.get("capabilities", []), meta,
                            payload.get("description", ""))
-    out["server_bundle_hash"] = SERVER_BUNDLE       # 节点拿去自己比对
+    out["server_bundle_hash"] = SERVER_BUNDLE       # the node compares it against its own
     return out
 
 
@@ -893,7 +893,7 @@ async def api_node_tasks(node_id: str, status: str = "claimed,running"):
     return {"tasks": db.node_tasks(node_id, [s for s in status.split(",") if s])}
 
 
-# ---- 管理侧（padctl / 脑的降级通道）----------------------------------------
+# ---- admin side (padctl / the brain's degraded channel) -------------------------------
 
 @app.get("/pad/{key}/api/digest")
 async def api_digest(recent_limit: int = 10):
@@ -933,13 +933,13 @@ async def api_task(task_id: str, artifact: str = "", offset: int = 0, limit: int
 @app.get("/pad/{key}/api/task/{task_id}/input-image")
 @app.get("/pad/{key}/api/task/{task_id}/input-file")
 async def api_task_input_file(task_id: str, name: str):
-    """供领取该任务的节点下载随任务提交的输入文件原始字节（图片/PDF/CSV/zip…）。"""
+    """Lets the node that claimed this task download the raw input files (image/PDF/CSV/zip…)."""
     out = db.read_task_input_file(task_id, name)
     if "error" in out:
         return JSONResponse(out, status_code=404 if out["error"] == "not_found" else 500)
     meta = out["meta"]
     return Response(out["data"], media_type=meta["mime_type"], headers={
-        # 头只允许 latin-1，中文名必须走 RFC 5987 的 filename*，否则带中文的文件下载直接 500。
+        # Headers take latin-1 only; a Chinese name needs RFC 5987 filename*, or the download 500s.
         "Content-Disposition": _attachment_disposition(meta["name"]),
         "X-PAD-SHA256": meta["sha256"],
         "Cache-Control": "no-store",
@@ -948,14 +948,14 @@ async def api_task_input_file(task_id: str, name: str):
 
 @app.get("/pad/{key}/api/task/{task_id}/status")
 async def api_task_status(task_id: str):
-    """轻量状态：节点执行体在跑的时候轮询它，发现 cancelled 就终止本地进程组。"""
+    """Lightweight status: the executor polls it while running, and kills the group on cancelled."""
     st = db.task_status(task_id)
     return st or {"error": "not_found", "task_id": task_id}
 
 
 @app.get("/pad/{key}/api/task/{task_id}/artifact")
 async def api_task_artifact(task_id: str, name: str = "", offset: int = 0, limit: int = 8000):
-    """取产物正文。name 留空只列产物；给 name 就按 offset/limit 取一段（同 MCP get_artifact）。"""
+    """Fetch artifact content. Empty name lists artifacts; a name returns one offset/limit chunk."""
     view = db.task_view(task_id)
     if view is None:
         return {"error": "not_found", "task_id": task_id}
@@ -967,7 +967,7 @@ async def api_task_artifact(task_id: str, name: str = "", offset: int = 0, limit
 @app.post("/pad/{key}/api/artifact")
 async def api_artifact(request: Request, task_id: str, name: str, node_id: str = "",
                        rows: str = "", schema: str = "", local_path: str = ""):
-    """节点把重要产物存一份上来（原始字节）。超限就拒，让它留在本地只回元数据。"""
+    """The node uploads a copy of an important artifact (raw bytes). Over the cap: rejected."""
     data = await request.body()
     return db.save_artifact(task_id, node_id, name, data, rows=rows, schema=schema,
                             local_path=local_path)
@@ -981,14 +981,14 @@ async def api_close_task(task_id: str, payload: dict):
 
 @app.get("/pad/{key}/join.md")
 async def api_join_md():
-    """给新机器上的 agent 看的接入协议。"""
+    """The onboarding protocol for the agent on a new machine."""
     doc = (HERE / "JOIN.md")
     return PlainTextResponse(doc.read_text() if doc.exists() else "JOIN.md missing")
 
 
 @app.get("/pad/{key}/agent.bundle.tgz")
 async def api_agent_bundle():
-    """客户端骨架：新机器解包就能跑。"""
+    """Client skeleton: unpack it on a new machine and it runs."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for rel in bundle.BUNDLE_FILES:

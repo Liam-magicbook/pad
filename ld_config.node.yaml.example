@@ -1,54 +1,56 @@
-# 节点配置样例 —— 复制成 ld_config.yaml 改三处就能跑：
+# Node config sample — copy to ld_config.yaml and change three places:
 #   node_id / capabilities / pad_url
 #
-# 命名约定（详见 JOIN.md 第二节）：
-#   带机器名前缀 = 这台专属，别的机器不要声明     → gpu-1.build
-#   不带前缀     = 描述"干什么"，谁都能声明，代表愿意分担 → scrape.batch
+# Naming convention (see JOIN.md section 2):
+#   with a machine-name prefix = this machine only, other machines must not declare it  -> gpu-1.build
+#   without a prefix           = describes "what it does", anyone may declare it and share the load -> scrape.batch
 #
-# 声明前先问：两台同时干这件事会互相踩吗？会 → 只有一台能声明。
+# Ask before declaring: will two machines doing this at once step on each other? If yes -> only one declares it.
 #
-# 并发（concurrency，默认 1=串行）：
-#   同一个 node 现在可以同时跑多个任务。给某个 capability 加 concurrency: N，
-#   就有 N 个槽位；LD 会一直领活把槽填满（每个任务各起一个独立执行体进程）。
-#   只有确定"这些活并行不会互相踩"才加：要账号登录态、要写同一份文件、
-#   要抢同一资源的（如整套 daily 流水线），保持 1。
+# Concurrency (concurrency, default 1 = serial):
+#   A single node can now run several tasks at once. Add concurrency: N to a capability and it
+#   has N slots; LD keeps claiming work to fill them (each task gets its own executor process).
+#   Only add it when "these jobs truly do not collide in parallel": anything needing an account
+#   login, writing the same file, or competing for the same resource (e.g. the whole daily
+#   pipeline) stays at 1.
 
-node_id: CHANGE_ME            # 如 gpu-1 / vps-1，全局唯一
-role: compute                 # compute / publisher / 其它自定义
+node_id: CHANGE_ME            # e.g. gpu-1 / vps-1, globally unique
+role: compute                 # compute / publisher / anything custom
 description: "一句话说清这台机器干嘛。要写明有没有账号登录态。"
-workspace: ~/pad-workspace    # agent 类任务的工作根目录（会自动往下下发为 PAD_WORKSPACE）
+workspace: ~/pad-workspace    # working root for agent-type tasks (passed down as PAD_WORKSPACE)
 
 capabilities:
 
-  # 例①：确定性活，直接调脚本（脚本自己写 stdout，或最后再接一句 tail）
+  # Example 1: deterministic job, call the script directly (it writes stdout itself, or append a tail)
   # publish.blog:
   #   desc: "发博客"
   #   cmd: "cd ~/projects/blog && bash publish.sh"
   #   timeout_min: 120
 
-  # 例②：需要判断的活，交给本机 agent 无头跑（专属活，名字带机器前缀）
+  # Example 2: a job needing judgement, handed to the local agent headless (machine-specific, prefixed name)
   gpu-1.build:
     desc: "跑重型代码任务"
     cmd: "python3 /opt/pad-ld/harness/run_harness.py opencode"
     timeout_min: 240
-    concurrency: 2        # 同机最多同时跑 2 个；默认 1=串行。只对"确认并行不会互相踩"的活开
+    concurrency: 2        # at most 2 on this machine at once; default 1 = serial. Only for jobs "confirmed safe in parallel"
 
-  # 例③：抓数据
+  # Example 3: scraping
   scrape.batch:
     desc: "批量抓数据，只读，不改任何东西"
     cmd: "cd ~/projects/scraper && python3 crawl.py --out $PAD_WORK_DIR/data.json"
     timeout_min: 120
 
-  # 自检：名字也带前缀，因为"我这台还活着"是这台的专属信息。
-  # 用 run_script.py 包一层：它会把 stdout、退出码收成标准 result.json
-  # （含逐条验收证据）。直接 echo 也行，但那样服务端会标"验收未回答"。
+  # Self-check: the name is prefixed too, because "this machine is still alive" is machine-specific.
+  # Wrapped in run_script.py: it folds stdout and the exit code into a standard result.json
+  # (including per-item acceptance evidence). Plain echo works too, but then the server marks
+  # "acceptance unanswered".
   NODE-1.ping.self:
     desc: "连通性自检"
     cmd: "python3 /opt/pad-ld/harness/run_script.py 'echo \"pong from $(hostname -s)\"'"
     timeout_min: 1
 
-# ${PAD_KEY} 会从环境变量或 ~/.pad_key 自动替换。
-# 把 host 换成你自己的 PAD 地址（本地就是 http://127.0.0.1:8790）。
+# ${PAD_KEY} is substituted from the environment or ~/.pad_key.
+# Point host at your own PAD address (http://127.0.0.1:8790 locally).
 pad_url: "http://127.0.0.1:8790/pad/${PAD_KEY}"
 poll_sec: 20
-work_dir: "~/pad-work"        # 任务工作目录；执行体只在这里写东西
+work_dir: "~/pad-work"        # task work dir; the executor only writes here

@@ -1,4 +1,4 @@
-# ---- 运行时数据：绝不进仓库 ----
+# ---- Runtime data: never commit ----
 /data/
 *.db
 *.db-wal
@@ -10,7 +10,7 @@ work/
 logs/
 *.log
 
-# ---- 本机私有：节点配置里有真实的机器名/路径/密钥，每个人自己维护 ----
+# ---- Machine-private: node configs hold real hostnames/paths/keys, each person keeps their own ----
 ld_config.yaml
 ld_config.*.yaml
 !ld_config.example.yaml
@@ -20,7 +20,7 @@ pad.env
 setup-env.sh
 *.bak-*
 *.bak
-# 私有流水线脚本（只在自己机器上跑的固化能力），随 ld_config 一起不进仓库
+# Private pipeline scripts (baked capabilities that only run on your own machine); kept out of the repo along with ld_config
 harness/run_*.local.py
 harness/run_daily.py
 harness/pipelines/
@@ -40,21 +40,21 @@ dist/
 .ruff_cache/
 .pytest_cache/
 
-# ---- 编辑器 / 系统 ----
+# ---- Editors / OS ----
 .DS_Store
 .idea/
 .vscode/
 *.swp
 .tmp/
 
-# 演示图脚本的兜底产物（没装 webshot 时会留下 HTML）
+# Fallback output of the demo-image script (leaves HTML behind when webshot is missing)
 docs/preview/*.html
 
-# ---- 论文：原始抓取含 operator 的真实 goal 文本与任务 id，只提交聚合 ----
+# ---- Paper: raw scrapes contain the operator's real goal text and task ids, commit aggregates only ----
 paper/data/tasks.json
 !paper/data/aggregates.json
 
-# LaTeX 中间产物
+# LaTeX intermediates
 paper/*.aux
 paper/*.log
 paper/*.out
@@ -66,10 +66,10 @@ paper/*.bcf
 paper/*.run.xml
 paper/*.synctex.gz
 
-# 演示图脚本的中间产物
+# Intermediates of the demo-image script
 docs/preview/.scene-*.html
 
-# ---- 论文源码不进仓库（只发布 pad.pdf + 聚合数据）----
+# ---- Paper sources are not committed (only pad.pdf + aggregate data are published) ----
 paper/*.tex
 paper/*.bib
 paper/*.bbl

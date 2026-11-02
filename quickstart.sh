@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# PAD 一键起步：装依赖 → 起服务端 → 起一台本地节点 → 打一个真任务，看到闭环。
+# PAD one-shot bootstrap: install deps -> start the server -> start a local node -> submit a
+# real task and watch the loop close.
 #
-#   ./quickstart.sh                 # 默认端口 8790，数据落 ./data
-#   PORT=9000 ./quickstart.sh       # 换端口
-#   ./quickstart.sh --stop          # 停掉这次起的进程
+#   ./quickstart.sh                 # default port 8790, data under ./data
+#   PORT=9000 ./quickstart.sh       # use another port
+#   ./quickstart.sh --stop          # stop the processes started by this run
 #
-# 做完你会有：
-#   http://127.0.0.1:8790/pad/<KEY>/mcp   ← 填进 ChatGPT 的 MCP Server URL
-#   ./data/quickstart.log                 ← 服务端与节点的输出
+# When it finishes you have:
+#   http://127.0.0.1:8790/pad/<KEY>/mcp   <- paste into ChatGPT's MCP Server URL
+#   ./data/quickstart.log                 <- server and node output
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -29,7 +30,7 @@ stop_all() {
 
 if [[ "${1:-}" == "--stop" ]]; then stop_all; exit 0; fi
 
-# ---------- 0. 环境 ----------
+# ---------- 0. Environment ----------
 command -v python3 >/dev/null || die "需要 python3（3.10+）"
 PYV="$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])')"
 [[ "${PYV}" -ge 310 ]] || die "python3 版本太老：${PYV}，需要 3.10+"
@@ -38,7 +39,7 @@ mkdir -p "$DATA/logs"
 LOG="${DATA}/quickstart.log"
 : > "${LOG}"
 
-# ---------- 1. 虚拟环境 + 依赖 ----------
+# ---------- 1. Virtualenv + dependencies ----------
 if [[ ! -x "${ROOT}/.venv/bin/python" ]]; then
   say "建虚拟环境（.venv）"
   python3 -m venv "${ROOT}/.venv"
@@ -48,7 +49,7 @@ say "装依赖（requirements.txt）"
 "${ROOT}/.venv/bin/pip" install -q -r "${ROOT}/requirements.txt" >>"${LOG}" 2>&1 \
   || die "依赖装失败，看 ${LOG}"
 
-# ---------- 2. 密钥 ----------
+# ---------- 2. Access key ----------
 if [[ ! -f "${KEY_FILE}" ]]; then
   say "生成访问密钥（${KEY_FILE}，权限 600）"
   "${ROOT}/.venv/bin/python" - <<'PY' > "${KEY_FILE}"
@@ -60,7 +61,7 @@ fi
 KEY="$(cat "${KEY_FILE}")"
 BASE="http://127.0.0.1:${PORT}/pad/${KEY}"
 
-# ---------- 3. 起服务端 ----------
+# ---------- 3. Start the server ----------
 if lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
   die "端口 ${PORT} 已被占用。换一个：PORT=9000 ./quickstart.sh"
 fi
@@ -81,7 +82,7 @@ for _ in $(seq 1 60); do
 done
 curl -fsS "${BASE}/api/digest" >/dev/null 2>&1 || die "服务端没起来，看 ${LOG}"
 
-# ---------- 4. 起一台本地节点 ----------
+# ---------- 4. Start one local node ----------
 say "起本地节点 local-1（能力 demo.echo / local.run）"
 cat > "${DATA}/ld_config.yaml" <<YAML
 node_id: local-1
@@ -116,7 +117,7 @@ for _ in $(seq 1 40); do
 done
 curl -fsS "${BASE}/api/nodes" | grep -q local-1 || die "节点没注册上，看 ${LOG}"
 
-# ---------- 5. 打一个真任务 ----------
+# ---------- 5. Submit a real task ----------
 say "下发任务 demo.echo，等节点领活并回报"
 PAD_URL="${BASE}" "${ROOT}/padctl.py" submit \
   --capability demo.echo --goal "自检：回一句 pong" --acceptance "返回 pong" >/dev/null

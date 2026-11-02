@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""回归测试：executor/session 的 hard timeout 不得被等同于业务 Task 失败。
+"""Regression test: the executor/session hard timeout must not be equated with a failed
+business Task.
 
-覆盖 2026-09-18 真实事故（节点 A t-20260918-6a7222 / 节点 B t-20260917-a83e54）：
-capability 的会话超时只 kill 了外层 sh，run_harness(孙)/claude(曾孙) 继续跑完并写出
-result.json，旧代码却在 TimeoutExpired 分支直接 report(failed) 且跳过 _collect_result()。
+Covers the real incidents of 2026-09-18 (node A t-20260918-6a7222 / node B
+t-20260917-a83e54): the capability's session timeout only killed the outer sh, while
+run_harness (grandchild) / claude (great-grandchild) kept running and wrote result.json, but
+the old code hit the TimeoutExpired branch, reported failed directly and skipped
+_collect_result().
 
-用真实 subprocess 复现「wrapper 超时但 descendant 继续完成」，不 mock 进程生命周期。
+Reproduces "wrapper times out but the descendant still finishes" with real subprocesses, no
+mocking of process lifecycles.
 
-跑法：
+How to run:
     cd "$(git rev-parse --show-toplevel)" && .venv/bin/python -m unittest discover -s tests -v
 """
 import json
@@ -64,7 +68,8 @@ sys.exit(2)
 
 
 class FakeLD(ld.LD):
-    """不碰网络的 LD：记录 report/upload，测试用秒级超时。"""
+    """An LD that never touches the network: records report/upload, uses second-scale
+    timeouts for tests."""
 
     LEASE_POLL_SEC = 0.2
 
@@ -125,14 +130,14 @@ class TimeoutSemanticsTest(unittest.TestCase):
     def py(self, name):
         return f"{sys.executable} {self.fixtures / name}"
 
-    # ---- 1. 正常完成 -------------------------------------------------------
+    # ---- 1. Normal completion -------------------------------------------------
     def test_normal_completion_reports_done(self):
         L = self.make_ld(self.py("ok.py"), timeout_sec=5)
         L.run_task(self.make_task())
         self.assertEqual(L.last()["level"], "done")
         self.assertEqual(L.last()["payload"].get("summary"), "ok done")
 
-    # ---- 2. wrapper 超时但子任务继续（事故复现）----------------------------
+    # ---- 2. wrapper times out but the child continues (incident reproduction) -----
     def test_wrapper_timeout_child_continues_is_not_failed(self):
         cmd = f"{sys.executable} {self.fixtures / 'wrapper.py'} " \
               f"{self.fixtures / 'grandchild.py'} 2"
@@ -145,9 +150,9 @@ class TimeoutSemanticsTest(unittest.TestCase):
         self.assertIn("grandchild", L.last()["payload"].get("summary", ""))
         self.assertEqual(L.last()["payload"].get("state"), "harvested")
 
-    # ---- 3. 超时后已有 result/artifact ------------------------------------
+    # ---- 3. result/artifact already present after timeout ----------------------
     def test_timeout_with_existing_result_harvests_artifacts(self):
-        # 给足 lease，确保走「发现 result 就收口」而不是 unresolved
+        # Give plenty of lease so this goes through "found a result, wrap up" and not unresolved
         L = self.make_ld(self.py("slow_with_result.py"), timeout_sec=1, lease_sec=3)
         L.run_task(self.make_task())
         self.assertNotIn("failed", L.levels())
@@ -158,13 +163,13 @@ class TimeoutSemanticsTest(unittest.TestCase):
         arts = L.last()["payload"].get("artifacts") or []
         self.assertTrue(any(a.get("name") == "data.csv" for a in arts))
 
-    # ---- 4. 真正执行失败 ---------------------------------------------------
+    # ---- 4. genuine execution failure -----------------------------------------
     def test_genuine_failure_reports_failed(self):
         L = self.make_ld(self.py("fail.py"), timeout_sec=5)
         L.run_task(self.make_task())
         self.assertEqual(L.last()["level"], "failed")
 
-    # ---- 5. descendant 熬过 lease：unresolved，随后 sweep 回收为 done ------
+    # ---- 5. descendant outlives the lease: unresolved, then sweep collects it as done --
     def test_descendant_outlives_lease_then_sweep_harvests(self):
         cmd = f"{sys.executable} {self.fixtures / 'wrapper.py'} " \
               f"{self.fixtures / 'grandchild.py'} 3"
@@ -175,13 +180,13 @@ class TimeoutSemanticsTest(unittest.TestCase):
         self.assertEqual(L.last()["level"], "unresolved")
         self.assertTrue(L.last()["payload"].get("descendant_alive"))
         self.assertTrue((self.root / "t-lease" / "pending.json").exists())
-        # 等 descendant 实际写完，再 sweep
+        # Wait for the descendant to actually finish writing, then sweep
         time.sleep(3.5)
         L.sweep_pending()
         self.assertEqual(L.last()["level"], "done")
         self.assertFalse((self.root / "t-lease" / "pending.json").exists())
 
-    # ---- 6. 异常路径也要 harvest 已有 result ------------------------------
+    # ---- 6. the exception path must also harvest an existing result -----------
     def test_exception_path_harvests_existing_result(self):
         L = self.make_ld(self.py("ok.py"), timeout_sec=5)
         task = self.make_task("t-exc")
@@ -197,12 +202,15 @@ class TimeoutSemanticsTest(unittest.TestCase):
         self.assertEqual(L.last()["level"], "done")
         self.assertEqual(L.last()["payload"].get("summary"), "produced before crash")
 
-    # ---- 7. claim 后心跳失败不得泄漏并发槽（2026-09-24 真实事故）----
+    # ---- 7. a failed heartbeat after claim must not leak a concurrency slot (real
+    # incident 2026-09-24) ----
     def test_start_heartbeat_failure_does_not_leak_slot(self):
-        """_start 里同步心跳失败时，任务线程必须照常起、槽位必须照常释放。
+        """When the synchronous heartbeat inside _start fails, the task thread must still
+        start and the slot must still be released.
 
-        旧实现顺序是 _active 登记 → _beat_now() → 起线程：心跳异常会冒到主循环被吞，
-        _run_guarded 的 finally 永不执行，任务从没跑却永久占住并发槽（6ee477 事故）。
+        The old order was: register in _active -> _beat_now() -> start thread. A heartbeat
+        exception bubbled up to the main loop and was swallowed, _run_guarded's finally never
+        ran, and a task that never ran held a concurrency slot forever (incident 6ee477).
         """
         L = self.make_ld(self.py("ok.py"), timeout_sec=5)
 
@@ -221,16 +229,17 @@ class TimeoutSemanticsTest(unittest.TestCase):
             self.assertEqual(L._active, {}, "心跳失败不得留下没有工作线程的幽灵槽位")
         self.assertEqual(L.last()["level"], "done", "任务线程必须照常跑完并汇报")
 
-    # ---- 8. 默认值/兼容性 --------------------------------------------------
+    # ---- 8. defaults / compatibility ------------------------------------------
     def test_defaults_and_compat(self):
         cfg = {"node_id": "n", "capabilities": {"cap": {"cmd": "true"}},
                "pad_url": "http://localhost:1", "pad_key": "k",
                "work_dir": str(self.root)}
         L = ld.LD(cfg)
-        self.assertEqual(L._timeout_seconds({}), 4320 * 60)      # 旧默认 4320 未变
-        self.assertEqual(L._lease_seconds({}), 60 * 60)          # 新 lease 默认 60min
+        self.assertEqual(L._timeout_seconds({}), 4320 * 60)      # old default 4320 unchanged
+        self.assertEqual(L._lease_seconds({}), 60 * 60)          # new lease default 60min
         self.assertEqual(L.work_root, self.root)
-        # 服务端 report() 对非 progress/done/failed 的 level 只记录、不改任务状态
+        # the server's report() only records levels other than progress/done/failed without
+        # changing task state
         self.assertNotIn("unresolved", ("progress", "done", "failed"))
 
 

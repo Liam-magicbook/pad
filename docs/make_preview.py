@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""从一次真实运行里抽 README 用的首屏动图与静帧。
+"""Extract the README hero animation and still frames from one real run.
 
-不是设计稿：文字全部来自本机真跑的输出（服务端/节点日志 + padctl/pad_mcp），
-用真 Chrome 逐帧截图，再交给 ffmpeg 拼成 GIF。
+Not a mock-up: every line of text comes from a real local run (server/node logs plus
+padctl/pad_mcp), captured frame by frame with real Chrome, then stitched into a GIF by ffmpeg.
 
-    ./quickstart.sh                       # 先有一个跑着的本地 PAD
+    ./quickstart.sh                       # first have a running local PAD
     .venv/bin/python docs/make_preview.py
 
-产物：
-    docs/preview/hero.gif    首屏 2×2 动图（四个场景各 1~2 秒）
-    docs/preview/*.jpg       各场景整幅静帧（正文配图用）
+Artifacts:
+    docs/preview/hero.gif    hero 2x2 animation (four scenes, 1-2 seconds each)
+    docs/preview/*.jpg       full-size still frame per scene (used in the body copy)
 """
 import base64
 import html
@@ -31,8 +31,8 @@ PORT = os.environ.get("PORT", "8790")
 KEY = (ROOT / "data" / ".pad_key").read_text().strip() if (ROOT / "data" / ".pad_key").exists() else ""
 BASE = f"http://127.0.0.1:{PORT}/pad/{KEY}"
 
-TILE_W, TILE_H = 700, 430      # 单场景画布（CSS px，2x 截图）
-BIG_W, BIG_H = 1000, 560       # 正文配图用的整幅
+TILE_W, TILE_H = 700, 430      # per-scene canvas (CSS px, captured at 2x)
+BIG_W, BIG_H = 1000, 560       # full-size frame used for body copy images
 SCALE = 2
 
 CSS = """
@@ -58,7 +58,8 @@ body {
 @keyframes b { 50% { opacity: 0 } }
 """
 
-# 整格铺满的终端窗口：2×2 拼起来像四台同时在跑的机器，没有空白缝隙
+# Edge-to-edge terminal windows: tiled 2x2 they read as four machines running at once,
+# with no blank gutters between them
 FRAME = '<div class="bar">{dots}<span class="ttl">{title}</span></div><div class="body">{inner}</div>'
 DOTS = ('<span class="dot" style="background:#ff5f57"></span>'
         '<span class="dot" style="background:#febc2e"></span>'
@@ -75,7 +76,7 @@ def _chrome_bin():
 
 
 class Chrome:
-    """最小 CDP 包装，只为逐帧截图。"""
+    """Minimal CDP wrapper; exists only to grab frame-by-frame screenshots."""
 
     def __init__(self, port=9253):
         import websocket
@@ -150,7 +151,8 @@ def sh(cmd):
 
 
 def write_page(name: str, inner: str, idx: int = 0) -> Path:
-    """每个场景可以有多个进度帧，文件名必须带序号，否则后一帧覆盖前一帧。"""
+    """A scene may have several progress frames; the filename must carry the index,
+    otherwise a later frame overwrites an earlier one."""
     OUT.mkdir(parents=True, exist_ok=True)
     p = OUT / f".scene-{name}-{idx}.html"
     p.write_text(f'<!doctype html><html><head><meta charset="utf-8">'
@@ -162,16 +164,16 @@ def card(lines: str, title: str) -> str:
     return FRAME.format(dots=DOTS, title=html.escape(title), inner=lines)
 
 
-# ----------------------------------------------------------------- 场景
+# --------------------------------------------------------------- scenes
 
 def scene_quickstart(frames):
-    """按真实进度逐行点亮（真实日志里的 5 个阶段）。"""
+    """Light up line by line following real progress (the 5 stages from the real log)."""
     steps = ["装依赖  requirements.txt",
              "生成密钥  data/.pad_key (600)",
              "起服务端  :8790",
              "起节点    local-1",
              "下发任务  demo.echo"]
-    done = "pong from my-machine at 05:51"      # 真实 log 行
+    done = "pong from my-machine at 05:51"      # real log line
     name = "quickstart"
     for n in range(1, len(steps) + 1):
         b = '<span class="p">$</span> ./quickstart.sh\n'
@@ -261,7 +263,7 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="pad-frames-"))
     c = Chrome()
     try:
-        ################ 首屏 2×2 动图 ###############
+        ################ hero 2x2 animation ###############
         tiles = []
         for build in (scene_quickstart, scene_digest, scene_mcp, scene_report):
             frames = build([])
@@ -271,10 +273,10 @@ def main():
                 c.shot(p.as_uri(), img, TILE_W, TILE_H)
                 outs.append(img)
                 p.unlink()
-            # 每帧至少停留 3 帧（~0.6s），让 GIF 读得完
+            # hold each frame for at least 3 GIF frames (~0.6s) so it stays readable
             tiles.append(outs)
 
-        # 每个 tile 各自补成等长片段（帧数一致才能 hstack/vstack）
+        # pad every tile to the same length (equal frame counts are required for hstack/vstack)
         SEG = 12
         segs = []
         for gi, outs in enumerate(tiles):
@@ -308,7 +310,7 @@ def main():
         print(f"  {(OUT / 'hero.gif').relative_to(ROOT)}  "
               f"{(OUT / 'hero.gif').stat().st_size // 1024} KB")
 
-        ################ 正文整幅静帧 ###############
+        ################ full-size stills for the body copy ###############
         for build, fname in ((scene_architecture, "architecture"),
                              (scene_quickstart, "quickstart"),
                              (scene_digest, "digest"),

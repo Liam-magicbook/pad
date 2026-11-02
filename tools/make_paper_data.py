@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""把 collect_stats.py 的原始抓取结果压成**只含聚合**的论文数据集。
+"""Compress the raw scrape from collect_stats.py into the paper's dataset,
+**aggregates only**.
 
-原始文件里有真实的 goal 文本和任务 id（operator 数据），不能进公开仓库。
-这个脚本只保留计数、分位数、分类结果，输出 paper/data/aggregates.json。
+The raw file contains real goal text and task ids (operator data), so it cannot go into a
+public repository. This script keeps only counts, percentiles and classification results and
+writes paper/data/aggregates.json.
 
     python3 tools/make_paper_data.py paper/data/tasks.json paper/data/aggregates.json
 """

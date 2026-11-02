@@ -1,12 +1,12 @@
-"""Product LD agent —— 每台机器跑一个。
+"""Product LD agent — one instance runs on every machine.
 
-它做四件事：
-  1. 向 PAD 注册自己的能力（capability）
-  2. 轮询领任务（按能力，不按机器）
-  3. 跑活，把结果整理成「汇报」回传
-  4. 执行体自行探索并完成任务；最终将 done / failed 报告写回 PAD
+It does four things:
+  1. Register this node's capabilities with PAD
+  2. Poll for work (by capability, not by machine)
+  3. Run the job, package the results into a report and send it back
+  4. The executor explores and finishes the task itself; the final done / failed report is written back to PAD
 
-用法:
+Usage:
     PAD_KEY=xxx python3 ld_agent.py ld_config.yaml
 """
 import hashlib
@@ -35,15 +35,15 @@ def ts() -> str:
 
 
 class LD:
-    # 单条汇报 payload 的上限（服务端实测能吃 ≥12KB；留余量，超了降级而不是丢）
+    # Cap on a single report payload (the server comfortably takes >=12KB; keep headroom — degrade, never drop)
     MAX_PAYLOAD = 16000
-    # 产物自动上传的单文件上限；超了就只留本地 + 元数据
+    # Per-file cap for auto-uploaded artifacts; anything larger stays local with metadata only
     ARTIFACT_MAX_BYTES = 5 * 1024 * 1024
-    # 会话超时后进入 lease 观察：继续等/收仍在跑的 descendant；到期仍活就报 unresolved
-    # （任务保持非终态，交给 sweep/recover_orphans 继续收），绝不因为会话超时判业务失败。
+    # After a session timeout, enter lease watch: keep waiting on / harvesting descendants that are still running;
+    # if still alive at expiry, report unresolved (task stays non-terminal, swept later) — never fail a task on a timeout.
     DEFAULT_LEASE_MIN = 60
     LEASE_POLL_SEC = 10
-    # 执行体运行期间轮询 PAD 任务状态的间隔：发现 cancelled 就杀进程组（取消传播）
+    # How often to poll PAD task state while the executor runs: on cancelled, kill the process group (cancel propagation)
     CANCEL_POLL_SEC = 15
     KILL_GRACE_SEC = 10
 
@@ -62,9 +62,9 @@ class LD:
         self.base = f"{self.base}"
         self.work_root = Path(cfg.get("work_dir", "/tmp/pad-work"))
         self.work_root.mkdir(parents=True, exist_ok=True)
-        self.outbox = self.work_root / "outbox.jsonl"   # 投不出去的汇报先落这儿，主循环补投
+        self.outbox = self.work_root / "outbox.jsonl"   # undeliverable reports land here; the main loop retries
         self._out_lock = threading.Lock()
-        self._active = {}                               # 正在跑：task_id -> {capability, t0}
+        self._active = {}                               # currently running: task_id -> {capability, t0}
         self._active_lock = threading.Lock()
 
     def _post(self, path, payload):
@@ -84,17 +84,17 @@ class LD:
         except requests.RequestException as exc:
             raise RuntimeError(f"PAD API {path} request failed ({type(exc).__name__})") from None
 
-    # ---- 报告的投递（不许静默丢） ----
+    # ---- Report delivery (never lose one silently) ----
     #
-    # 2026-09-17 事故：report() 直接 POST，网关 502 时异常被上层 except 吞掉，
-    # 结果就是「活干完了、本地有产物、上层永远不知道」。更根本的是：5/5 都返回 200，
-    # 服务端存的却是空壳 payload —— 只信 ack 不够。
-    # 所以现在：POST → **读回确认**（task_view 里能不能查到这条 client_id）→
-    # 确认不到就重投 → 仍不行落 outbox，主循环每轮补投，直到线上真的有了为止。
-    # 每条带 client_id，服务端按它去重（重投/重启后重投都不会产生重复汇报）。
+    # 2026-09-17 incident: report() POSTed directly, and when the gateway returned 502 the exception was
+    # swallowed by an outer except — the work got done, artifacts sat locally, and the platform never knew.
+    # Worse: all 5 of 5 attempts returned 200 while the server stored an empty shell payload. An ack is not proof.
+    # So now: POST -> **read back to confirm** (is this client_id findable in task_view) ->
+    # unconfirmed -> resend -> still failing -> drop into outbox, retried every main-loop tick until it is really online.
+    # Every report carries a client_id and the server dedupes on it, so resends never produce duplicate reports.
 
     def _attempt(self, path: str, body: dict, quiet: bool = False) -> tuple[str, dict | None]:
-        """一次投递尝试。ok=已确认落库；reject=服务端明确拒绝（重投无用）；retry=再试。"""
+        """One delivery attempt. ok=confirmed stored; reject=server refused outright (resend is useless); retry=try again."""
         try:
             r = requests.post(f"{self.base}/api/{path}", json=body, headers=self.h, timeout=20)
         except requests.RequestException as exc:
@@ -115,7 +115,7 @@ class LD:
         return "ok", r.json()
 
     def _confirmed(self, path: str, body: dict) -> bool:
-        """读回：这条到底有没有进线上状态。查不到就是没送到，别自欺。"""
+        """Read back: did this report really reach the online state? Missing means it never arrived — no self-deception."""
         try:
             t = self._get(f"task/{body['task_id']}")
         except Exception as exc:
@@ -126,7 +126,7 @@ class LD:
         if cid and any(x.get("client_id") == cid for x in items):
             return True
         if any(x.get("client_id") for x in items):
-            return False                      # 服务端会存 client_id，却没这条 → 真没到
+            return False                      # server does store client_id, this one absent -> it never arrived
         return any(x.get("level") == body.get("level") and x.get("summary") == body.get("summary")
                    for x in items)
 
@@ -169,11 +169,11 @@ class LD:
                     print(f"[{ts()}] outbox 补投并已确认：{e['path']} {e['body'].get('task_id', '')}")
             if left:
                 self.outbox.write_text("\n".join(left) + "\n")
-            if len(left) != getattr(self, "_out_pending", -1):   # 只在数字变化时吭声
+            if len(left) != getattr(self, "_out_pending", -1):   # only speak up when the number changes
                 print(f"[{ts()}] outbox 待补投 {len(left)}/{len(lines)} 条")
                 self._out_pending = len(left)
 
-    # ---- 基础动作 ----
+    # ---- Basic actions ----
 
     def register(self):
         detail = {k: v.get("desc", "") for k, v in self.cfg["capabilities"].items()}
@@ -201,7 +201,7 @@ class LD:
         self._post("heartbeat", {"node_id": self.node_id, "summary": summary})
 
     def claim(self, capabilities=None):
-        """领一个活。capabilities 只传「当前还有空槽」的能力，避免领回来跑不了。"""
+        """Claim a job. capabilities carries only the caps with a free slot, so nothing is claimed that cannot run."""
         caps = list(self.caps if capabilities is None else capabilities)
         if not caps:
             return None
@@ -211,10 +211,10 @@ class LD:
     INPUT_FILE_MAX_COUNT = 8
 
     def _receive_input_files(self, task, tdir: Path) -> list[dict]:
-        """把随任务下发的输入文件下载到本机任务目录，并核对字节数与 SHA-256。
+        """Download the input files shipped with the task into the local task dir, verifying byte count and SHA-256.
 
-        服务端把「图片」和「普通文件」放在同一条清单里（input_files，旧名 input_images），
-        这里一律按字节处理：图片/PDF/CSV/zip 都只是文件，能否理解由执行体自己决定。
+        The server puts "images" and "plain files" in one manifest (input_files, formerly input_images);
+        here everything is bytes: images/PDFs/CSVs/zips are just files, and making sense of them is the executor's call.
         """
         files = task.get("input_files")
         if files is None:
@@ -256,7 +256,7 @@ class LD:
             json.dumps(received, ensure_ascii=False, indent=2))
         return received
 
-    # 老名字：外部脚本/文档提过这个方法名。
+    # Legacy alias: external scripts and docs refer to this method name.
     _receive_input_images = _receive_input_files
 
     def report(self, task_id, level, summary, payload=None, client_id=None):
@@ -265,7 +265,7 @@ class LD:
             if level == "progress":
                 client_id = uuid.uuid4().hex
             else:
-                # 终态汇报用确定性 id：重投、outbox 补投、重启后重投都只会算一条
+                # Terminal reports get a deterministic id, so resend / outbox retry / post-restart resend all count once
                 digest = hashlib.sha1(json.dumps([summary, payload], ensure_ascii=False,
                                                  sort_keys=True).encode()).hexdigest()[:8]
                 client_id = f"{task_id}-{level}-{digest}"
@@ -277,7 +277,7 @@ class LD:
         else:
             print(f"[{ts()}] report:{level} {summary}")
 
-    # ---- 干活 ----
+    # ---- Doing the work ----
 
     def run_task(self, task):
         cap = task["capability"]
@@ -310,7 +310,7 @@ class LD:
             "PAD_WORKSPACE": self.cfg.get("workspace", str(Path.home() / "pad-workspace")),
             "PAD_INPUT_FILES": json.dumps(input_files, ensure_ascii=False),
             "PAD_INPUT_FILES_PROMPT": file_prompt,
-            # 旧变量名保留：老的 capability 命令/脚本里有读它们的。
+            # Legacy variable names kept: older capability commands/scripts read them.
             "PAD_INPUT_IMAGES": json.dumps(input_files, ensure_ascii=False),
             "PAD_INPUT_IMAGES_PROMPT": file_prompt,
         })
@@ -323,11 +323,11 @@ class LD:
             {"rc": info.get("rc"), "timed_out": info.get("timed_out", False)},
             ensure_ascii=False))
 
-        if info.get("cancelled"):                   # 上层取消：执行体已杀，不报终态
+        if info.get("cancelled"):                   # cancelled upstream: executor killed, no terminal state reported
             self._on_cancelled(task, tdir, info)
             return
 
-        if info["timed_out"]:                       # 会话超时 ≠ 任务失败，走回收语义
+        if info["timed_out"]:                       # session timeout != task failure; take the recovery path
             self._on_session_timeout(task, tdir, info, spec)
             return
 
@@ -339,19 +339,19 @@ class LD:
             summary = (payload.get("summary") or self._tail(tdir) or "任务未完成").strip()
             self.report(task["task_id"], "failed", summary[:400], payload)
 
-    # ---- 单次 executor/session 生命周期：与业务 Task 状态解耦 ----
+    # ---- Single executor/session lifecycle: decoupled from business Task state ----
     #
-    # 2026-09-18 事故（wsl-kuo0fgi t-20260918-6a7222 / mac-1 t-20260917-a83e54）：
-    # capability 的 60min timeout 只 kill 了外层 sh；run_harness(孙) 与 claude/opencode(曾孙)
-    # 被 init 收养后继续跑了 2h01m，完整产出 result.json + 16 个 artifacts，但旧代码在
-    # TimeoutExpired 分支直接 report(failed) 并 return，**跳过了 _collect_result()**，
-    # 于是「活干完了、PAD 只看到失败」。根因：把单次 wrapper 的 hard timeout 当成业务 Task failed。
-    # 修复原则：
-    #   1) 会话超时后一律先 harvest，有 result 就按结果收口；
-    #   2) descendant 仍活着就进 lease 观察，到期仍活报 unresolved（任务保持非终态，可回收），
-    #      绝不 kill 仍可能完成任务的有效 descendant；
-    #   3) 只有「executor 已退出且无任何 result」才算真失败。
-    # 兼容：capability/调用方式不变；timeout_min 仍是会话软超时；lease_min 可选，缺省 60。
+    # 2026-09-18 incident (wsl-kuo0fgi t-20260918-6a7222 / mac-1 t-20260917-a83e54):
+    # the capability's 60min timeout killed only the outer sh; run_harness (grandchild) and claude/opencode
+    # (great-grandchild) were adopted by init and ran for another 2h01m, fully producing result.json plus 16
+    # artifacts — yet the old code went straight to report(failed) and returned from the TimeoutExpired branch,
+    # **skipping _collect_result()**, so the work was done and PAD only saw a failure. Root cause: treating one
+    # wrapper's hard timeout as a failed business Task. Rules of the fix:
+    #   1) after any session timeout, harvest first; if a result exists, close out on that result;
+    #   2) if a descendant is still alive, enter lease watch and report unresolved at expiry (task stays
+    #      non-terminal, still collectable); never kill a live descendant that may still finish the task;
+    #   3) only "executor has exited and there is no result at all" counts as a real failure.
+    # Compatibility: capability/call convention unchanged; timeout_min is still the soft timeout; lease_min optional (60).
 
     def _timeout_seconds(self, spec) -> int:
         return int(spec.get("timeout_min", 4320)) * 60
@@ -375,14 +375,14 @@ class LD:
         return (tdir / "result.json").is_file()
 
     def _task_status(self, task_id):
-        """查任务当前状态；网络异常返回 None（拿不到状态就不乱杀）。"""
+        """Look up the task's current state; return None on network errors (with no state, do not kill anything)."""
         try:
             return self._get(f"task/{task_id}/status").get("status")
         except Exception:
             return None
 
     def _kill_group(self, pgid, grace=None) -> None:
-        """先 TERM 再 KILL，整个进程组一起收（executor 的 descendant 都在这一组）。"""
+        """TERM then KILL, taking down the whole process group (the executor's descendants all live in it)."""
         grace = self.KILL_GRACE_SEC if grace is None else grace
         if not pgid:
             return
@@ -405,18 +405,18 @@ class LD:
         return lines[-1] if lines else ""
 
     def _exec(self, task_id, cmd, tdir, env, timeout_s) -> dict:
-        """在独立进程组里跑一次 executor。
+        """Run one executor in its own process group.
 
-        超时**不**杀进程组：descendant 可能仍在完成有效工作（事故已验证）。
-        但上层把任务 cancelled 时必须真的停下来 —— 运行期间轮询状态，发现取消就杀整组。
-        输出落 exec.log（文件而非管道），避免孤儿进程写满管道被阻塞。
+        A timeout does **not** kill the process group: descendants may still be doing valid work (the incident proved it).
+        But an upstream cancel must really stop it — poll state while running and kill the whole group on cancel.
+        Output goes to exec.log (a file, not a pipe) so orphans cannot block on a full pipe.
         """
         logf = (tdir / "exec.log").open("w")
         t0 = time.time()
         proc = subprocess.Popen(cmd, shell=True, cwd=str(tdir), env=env,
                                 stdout=logf, stderr=subprocess.STDOUT, text=True,
                                 start_new_session=True)
-        pgid = proc.pid                     # start_new_session ⇒ 子进程即会话/进程组组长
+        pgid = proc.pid                     # start_new_session ⇒ the child is the session / process-group leader
         cancelled = threading.Event()
         stop_watch = threading.Event()
 
@@ -438,7 +438,7 @@ class LD:
             rc, timed_out = None, True
         finally:
             stop_watch.set()
-            logf.close()                    # 关父进程这份；子进程仍持有自己的 fd
+            logf.close()                    # close the parent's copy; the child still holds its own fd
         return {"rc": rc, "timed_out": timed_out, "pgid": pgid,
                 "elapsed": int(time.time() - t0), "cancelled": cancelled.is_set()}
 
@@ -451,7 +451,7 @@ class LD:
         return payload
 
     def _finish_from_work(self, task, tdir, info, note) -> None:
-        """有 result.json 就按报告状态收口（会话超时/异常/重启补收都走这里）。"""
+        """If result.json exists, close out on its reported status (session timeout / exception / restart all land here)."""
         payload = self._harvest(tdir, info, info.get("rc"), "harvested", note)
         summary = (payload.get("summary") or "").strip() or f"{task['capability']} 已产出结果"
         self.report(task["task_id"], self._result_level(payload, info.get("rc")), summary[:400], payload)
@@ -465,7 +465,7 @@ class LD:
         }, ensure_ascii=False))
 
     def _on_cancelled(self, task, tdir, info) -> None:
-        """任务被上层取消：执行体已终止，别报 done/failed（控制面已定终态），清掉可复活标记。"""
+        """Cancelled upstream: executor is gone, report nothing terminal (control plane owns it); drop revival marker."""
         (tdir / "pending.json").unlink(missing_ok=True)
         (tdir / "cancelled.json").write_text(json.dumps({
             "task_id": task["task_id"], "capability": task["capability"],
@@ -475,11 +475,11 @@ class LD:
 
     def _on_session_timeout(self, task, tdir, info, spec) -> None:
         cap = task["capability"]
-        # 1) 已有 result：活其实干完了，按结果收口，别报失败
+        # 1) a result already exists: the work is actually done, close out on it and do not report failure
         if self._has_result(tdir):
             self._finish_from_work(task, tdir, info, "session_timeout_result_present")
             return
-        # 2) descendant 还活着：lease 观察，期间持续 harvest，绝不 kill
+        # 2) descendant still alive: lease watch, keep harvesting throughout, never kill
         if self._group_alive(info.get("pgid")):
             lease_s = self._lease_seconds(spec)
             deadline = time.time() + lease_s
@@ -494,7 +494,7 @@ class LD:
                 self._finish_from_work(task, tdir, info, "harvested_during_lease")
                 return
             if self._group_alive(info.get("pgid")):
-                # 到期仍在跑：报 unresolved（任务保持非终态），落 marker，交给 sweep 继续收
+                # still running at expiry: report unresolved (task stays non-terminal) and leave a marker for sweep
                 self._write_pending(tdir, task, info, info["timeout_sec"], lease_s)
                 payload = {"state": "unresolved", "reason": "executor_session_timeout",
                            "descendant_alive": True, "pgid": info.get("pgid"),
@@ -504,7 +504,7 @@ class LD:
                 self.report(task["task_id"], "unresolved",
                             f"{cap} 会话超时，执行体仍在运行（已转后台回收）"[:400], payload)
                 return
-        # 3) descendant 已退出且无 result：真正的执行失败（仍带上已存在的 artifacts）
+        # 3) descendant exited with no result: a real execution failure (still carry whatever artifacts exist)
         payload = self._collect_result(tdir, info.get("rc"))
         payload.update(state="failed", reason="executor_exited_no_result",
                        descendant_alive=False, pgid=info.get("pgid"), work_dir=str(tdir))
@@ -512,7 +512,7 @@ class LD:
                     (self._tail(tdir) or f"{cap} 会话超时且执行体已退出、无产物")[:400], payload)
 
     def sweep_pending(self) -> None:
-        """会话超时转后台的 descendant：有结果就收，死了没结果才算失败。主循环每轮调用。"""
+        """Descendants left running by a session timeout: harvest any result; only "dead with no result" is a failure."""
         for marker in sorted(self.work_root.glob("*/pending.json")):
             tdir = marker.parent
             try:
@@ -523,7 +523,7 @@ class LD:
             task = {"task_id": m["task_id"], "capability": m.get("capability", "")}
             info = {"pgid": m.get("pgid"), "rc": None, "elapsed": 0,
                     "timeout_sec": m.get("session_timeout_sec")}
-            if self._task_status(m["task_id"]) == "cancelled":   # 上层已取消，别复活
+            if self._task_status(m["task_id"]) == "cancelled":   # cancelled upstream, do not revive
                 marker.unlink(missing_ok=True)
                 continue
             if self._has_result(tdir):
@@ -531,7 +531,7 @@ class LD:
                 marker.unlink(missing_ok=True)
                 continue
             if self._group_alive(m.get("pgid")):
-                continue                    # 还在干，别打扰
+                continue                    # still working, leave it alone
             payload = self._collect_result(tdir, None)
             payload.update(state="failed", reason="descendant_exited_no_result",
                            descendant_alive=False, pgid=m.get("pgid"), work_dir=str(tdir))
@@ -549,12 +549,12 @@ class LD:
         return "done"
 
     def _collect_result(self, tdir: Path, code) -> dict:
-        """把 result.json 整个收进 payload。
+        """Pull result.json fully into the payload.
 
-        契约里 report / acceptance_results / artifacts 就是给上层看的，
-        2026-09-17 之前这里只回传 stdout 最后一行，等于让执行体白写。
-        现在不再挑字段：执行体在 result.json 顶层写什么就带什么（report / metrics / evidence …），
-        挑字段正是"想知道的信息丢在本地"那次事故的根。
+        In the contract, report / acceptance_results / artifacts exist for the platform to read,
+        and before 2026-09-17 this only sent back the last stdout line, making the executor's work pointless.
+        No more field picking: whatever the executor writes at the top level of result.json comes along
+        (report / metrics / evidence ...); that field picking was the root of the "info we wanted stayed local" incident.
         """
         payload: dict = {"exit": code, "work_dir": str(tdir)}
         f = tdir / "result.json"
@@ -573,7 +573,7 @@ class LD:
         payload["work_dir"] = str(tdir)
         payload.setdefault("summary", "")
         payload["artifacts"] = self._ship_artifacts(tdir, r.get("artifacts"))
-        if self._too_big(payload):                  # 超限先截正文，再退掉 evidence
+        if self._too_big(payload):                  # over budget: truncate the body first, then drop evidence
             payload["report"] = str(payload.get("report", ""))[:2000]
             payload["_note"] = "报告过长已截断，完整内容见节点 work_dir/result.json"
         if self._too_big(payload):
@@ -582,15 +582,15 @@ class LD:
         return payload
 
     def _ship_artifacts(self, tdir: Path, raw) -> list:
-        """归一化 artifacts，并机械地把小文件存一份到服务端。
+        """Normalize artifacts and mechanically push a copy of small files to the server.
 
-        不让执行体判断"什么算重要"（那和它自己决定"汇报什么"是同一个毛病），
-        规则是死的：是文件、≤ ARTIFACT_MAX_BYTES、没显式写 upload:false → 就传。
-        大的/目录只留元数据，让上层知道东西在、多大、什么结构。
+        The executor is not asked to judge "what matters" (the same disease as letting it decide "what to report");
+        the rule is dead simple: it's a file, <= ARTIFACT_MAX_BYTES, no explicit upload:false -> upload it.
+        Large files and directories keep metadata only, so the platform knows it exists, how big it is, and its shape.
         """
         items = []
-        # run.log 自动带一份：这是唯一"过程原始证据"，执行体不一定会想到列它，
-        # 而它正是上层事后想追细节时最该有的东西。靠规则，不靠它的自觉。
+        # run.log is included automatically: it is the only raw process evidence, and the executor may not think to list it —
+        # yet it is exactly what the platform needs to dig into details later. Trust the rule, not its diligence.
         auto = [{"path": str(p), "name": p.name, "auto": True}
                 for p in (tdir / "run.log", tdir / "exec.log") if p.is_file()]
         seen = set()
@@ -640,12 +640,12 @@ class LD:
         return False
 
     def recover_orphans(self):
-        """开机捡回「自己名下但这次进程没在跑」的任务。
+        """On startup, recover tasks that belong to this node but are not running in this process.
 
-        以前这种情况是黑洞：claim 之后进程被重启，任务永远停在 claimed，线上不看
-        心跳根本发现不了（2026-09-17 真丢过两条）。现在按本地残留如实补交：
-        有 result.json 就按保存的退出状态补交结果；什么都没有就如实报失败。
-        不自动重跑，重跑可能造成重复副作用。
+        This used to be a black hole: the process restarted right after claim, the task sat in claimed forever,
+        and the platform could not notice without watching heartbeats (two were really lost on 2026-09-17).
+        Now we report honestly from local leftovers: if result.json exists, report the result with the saved exit status;
+        if nothing exists, report failure honestly. No automatic re-run: a re-run can duplicate side effects.
         """
         try:
             tasks = self._get(f"node/{self.node_id}/tasks",
@@ -657,14 +657,14 @@ class LD:
             if t["capability"] not in self.cfg["capabilities"]:
                 continue
             if self._task_status(t["task_id"]) == "cancelled":
-                continue        # 上层已取消的任务不补交，别再冒出来
+                continue        # do not re-report tasks cancelled upstream; do not let them resurface
             tdir = self.work_root / t["task_id"]
             tdir.mkdir(parents=True, exist_ok=True)
             marker = tdir / "recovered.json"
             if marker.exists():
                 continue
             if any(r.get("level") in ("done", "failed") for r in (t.get("reports") or [])):
-                continue        # 已有终态汇报，只是状态残留，别重复补交
+                continue        # a terminal report already exists; this is just stale state, do not duplicate it
             res_file = tdir / "result.json"
             if res_file.exists():
                 state_file = tdir / "run_state.json"
@@ -700,13 +700,13 @@ class LD:
                                          ensure_ascii=False))
             print(f"[{ts()}] 捡回孤儿任务 {t['task_id']} → {action}")
 
-    # ---- 主循环 ----
+    # ---- Main loop ----
     #
-    # 任务跑在后台线程里，主循环继续心跳。
-    # 不然一个跑 40 分钟的任务会让这台机器在第 31 分钟被误判成失联。
+    # Tasks run on background threads while the main loop keeps heartbeating.
+    # Otherwise a 40-minute task gets this machine declared offline at minute 31.
 
     def _free_caps(self) -> list:
-        """还有空槽的能力名。每个能力的并发上限来自配置 concurrency（默认 1 = 串行）。"""
+        """Capabilities with a free slot, capped by each capability's config concurrency (default 1 = serial)."""
         with self._active_lock:
             running = [a["capability"] for a in self._active.values()]
         out = []
@@ -730,13 +730,13 @@ class LD:
             self.beat(f"idle{tail}")
 
     def _start(self, task):
-        # 2026-09-24 事故（wsl-kuo0fgi t-20260923-6ee477）：原来先登记 _active、再 _beat_now()
-        # （同步 HTTP 心跳）、最后才起工作线程。心跳一旦超时/报错（网络抖动、502），异常提前
-        # 冒到主循环被吞掉，_run_guarded 的 finally 永远不会执行 —— 这个任务从没真正开跑，
-        # 却把并发槽永久占住（任务一直停在 claimed、没有 progress 上报、也不进 watch_cancel），
-        # 上层 close_task 也清不掉它，后续 queued 任务再无槽可领。
-        # 修复：先起线程（槽位由线程的 finally 负责释放），再补一次 best-effort 心跳；
-        #        线程都起不来就回滚登记，绝不留下“有槽无主”的幽灵占用。
+        # 2026-09-24 incident (wsl-kuo0fgi t-20260923-6ee477): we used to register _active, then call _beat_now()
+        # (a synchronous HTTP heartbeat), and only then start the worker thread. If that heartbeat timed out or
+        # errored (network blip, 502), the exception bubbled to the main loop and got swallowed, so _run_guarded's
+        # finally never ran — the task never actually started, yet the concurrency slot was held forever (task stuck
+        # in claimed, no progress reported, never reached watch_cancel), even close_task upstream could not clear it,
+        # and no later queued task could get a slot. Fix: start the thread first (its finally releases the slot),
+        # then do a best-effort heartbeat; if the thread cannot start, roll back the registration — no ownerless ghost slot.
         with self._active_lock:
             self._active[task["task_id"]] = {"capability": task["capability"], "t0": time.time()}
         try:
@@ -758,7 +758,7 @@ class LD:
             print(f"[{ts()}] task error: {exc}")
             try:
                 tdir = self.work_root / task["task_id"]
-                if self._has_result(tdir):          # 异常退出也要 harvest 已产出的 result/artifacts
+                if self._has_result(tdir):          # even on an exception, harvest any result/artifacts already produced
                     info = {"pgid": None, "rc": None, "elapsed": 0, "timeout_sec": None}
                     payload = self._harvest(tdir, info, None, "harvested", "exception_path")
                     summary = (payload.get("summary") or "异常退出前已产出结果").strip()
@@ -774,9 +774,9 @@ class LD:
 
     def loop(self):
         self.register()
-        self.flush_outbox()        # 上次没送到的汇报，先补投
-        self.recover_orphans()     # 上次没跑完的任务，按本地残留如实补交
-        self.sweep_pending()       # 会话超时转后台的 descendant，有结果就收
+        self.flush_outbox()        # retry reports that failed to send last time
+        self.recover_orphans()     # honestly report tasks left unfinished last time, from local leftovers
+        self.sweep_pending()       # harvest descendants handed to the background by a session timeout
         poll = int(self.cfg.get("poll_sec", 20))
         last_beat = 0
         last_reg = time.time()
@@ -787,9 +787,9 @@ class LD:
                     last_beat = time.time()
 
                 self.flush_outbox()
-                self.sweep_pending()               # 回收会话超时后仍在后台完成的 descendant
+                self.sweep_pending()               # collect descendants that finished in the background after a timeout
 
-                if time.time() - last_reg > 600:   # 10 分钟复核一次骨架是否过期
+                if time.time() - last_reg > 600:   # re-check whether the skeleton is stale every 10 minutes
                     try:
                         self.register()
                     except Exception as exc:
@@ -797,7 +797,7 @@ class LD:
                     last_reg = time.time()
 
                 started = False
-                caps = self._free_caps()           # 只领还有空槽的能力 → 同机多任务并行
+                caps = self._free_caps()           # claim only capabilities with free slots -> parallel tasks on one machine
                 if caps:
                     task = self.claim(caps)
                     if task:
@@ -805,7 +805,7 @@ class LD:
                         started = True
 
                 if started:
-                    continue                       # 立刻再填下一个空槽
+                    continue                       # immediately fill the next free slot
                 time.sleep(5 if self._active else poll)
             except KeyboardInterrupt:
                 print("bye")

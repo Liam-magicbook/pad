@@ -1,6 +1,6 @@
 # PAD
 
-[中文](README.md) · [English](README.en.md) · [Français](README.fr.md) · **日本語** · [Русский](README.ru.md)
+[English](README.md) · [中文](README.zh.md) · [Français](README.fr.md) · **日本語** · [Русский](README.ru.md)
 
 **手持ちのマシンを、ChatGPT / Claude が指揮できる実行クラスタに変える。**
 1 プロセス、1 つの SQLite、2 つの入口 — モデルは無状態、状態はすべて PAD にある。
@@ -9,7 +9,7 @@
 
 <sub>4 パネルはいずれも実実行のフレーム：`./quickstart.sh` が 1 行ずつ点灯する様子、`padctl digest`、MCP ツール面、タスク報告。`docs/make_preview.py` がこのマシンの実際の出力から生成したもので、モックアップではない。</sub>
 
-**論文**：[`paper/pad.pdf`](paper/pad.pdf) — 6 台のマシン、938 件の実タスク、835 マシンアワーの実証報告（ICML 2025 組版）。
+**論文**：[`paper/pad.pdf`](paper/pad.pdf) — 6 台のマシン、938 件の実タスク、835 マシンアワーの実証報告（ICML Template 組版）。
 
 ---
 
@@ -387,7 +387,7 @@ bash tests/e2e_input_files.sh                       # E2E：一時サーバー +
 
 ## 論文
 
-`paper/pad.pdf`（ICML 2025 組版、本文 8 ページ + 付録 5 ページ）は上記を引用可能なシステム報告に
+`paper/pad.pdf`（ICML Template 組版、本文 8 ページ + 付録 5 ページ）は上記を引用可能なシステム報告に
 したもの：問題定義、harness / long-horizon / 委譲の各研究との関係、アーキテクチャ、設計原則、
 そして実測。付録では DB スキーマ、タスク状態機械、9 ツールの契約、再現スクリプトを個別に展開する。リポジトリには完成した
 PDF のみを公開し、LaTeX ソースはローカルに保持する。

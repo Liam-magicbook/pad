@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<!-- macOS 常驻。改三处：__PAD_HOME__ 换成 PAD 目录绝对路径、__PYTHON__ 换成 venv 里的 python、
-     配置名换成你自己的。然后：
+<!-- macOS daemon. Change three things: replace __PAD_HOME__ with the absolute PAD directory,
+     replace __PYTHON__ with the python inside the venv, and change the config name to your own.
+     Then:
        cp deploy/com.pad.ld.plist ~/Library/LaunchAgents/
        launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.pad.ld.plist -->
 <dict>
