@@ -14,49 +14,44 @@ One process, one SQLite file, two doors.
 
 ## PAD is not an agent
 
-Get this straight first, or everything after it reads wrong.
+Get this boundary straight first, or the rest reads wrong.
 
 ```
-ChatGPT / Claude  (brain)   ← stateless; sends goals, reads results
-        ↘
-          PAD               ← no intelligence. Task state, routing, evidence
-        ↙
-  nodes × N  (one per machine)   ← does the work; declares what it can do
+brain (ChatGPT / Claude / a human CLI / a timer)  →  sends goal / constraints / acceptance
+PAD                                              →  task state, routing, evidence ledger
+node daemons × N                                 →  claim work, execute, report
+work agent (opencode / claude / codex)           →  actually does the job
 ```
 
-**PAD does not think and does not execute.** It does three things:
+PAD is persistent state plus routing, with no intelligence inside. It does three things:
 
-- remembers who is doing what and how far it got (task state)
-- routes work to nodes that declared the matching capability (routing)
-- keeps every report and every piece of evidence (the ledger)
+- Tracks task lifecycle and current progress across all machines.
+- Indexes node capabilities and matches incoming work to nodes ready to claim it.
+- Preserves complete execution reports, output artifacts, and criterion evidence in an append-only ledger.
 
-The brain is an external ChatGPT or Claude — or your own command line. It is **new every time** and remembers nothing from yesterday.
-
-That is the whole reason PAD exists: **what the brain cannot remember, PAD remembers; what the brain cannot see, PAD routes.**
+The intelligence is all external: ChatGPT or Claude over MCP, a timer, or an operator at the command line. A session is stateless and volatile — it does not remember yesterday and cannot see what a machine is doing right now. PAD lifts that state out and adds a routing layer, so the brain only has to handle intent, judgment and acceptance.
 
 ## Why that matters
 
-An ordinary agent is one model inside one session. Its ceiling is how much that session's context can hold.
+An ordinary agent ties its state to one conversation. The moment work spans several machines, awkward prerequisites or long time horizons, that shape breaks:
 
-- New session → amnesia, explain everything again
-- Different machine → no idea what is installed there or what it can do
-- One more tool → context gets tighter, until it does not fit
+- **Session volatility**: Resetting a conversation erases memory, forcing operators to restate context, constraints, and project history from scratch.
+- **Node blindness**: A model session cannot inspect what tools, dependencies, or access credentials exist on remote physical hosts.
+- **Context saturation**: Packing intermediate logs, environment outputs, and scratch files into the prompt degrades reasoning and eventually exceeds the context window.
 
-PAD moves the state out of the session. So:
+PAD moves that state into SQLite instead:
 
-- **The brain can command machines it has never seen.** It never learns a hostname; it declares that a thing needs doing, and PAD routes to whichever node has the capability. Swap a machine, add one, lose one — no change on the brain side.
-- **Many nodes work at once and their goals do not drift apart.** Same task definition in, same ledger out.
-- **You see the whole board.** One `get_digest` is the state of every node, not one session's view.
+- **Zero-knowledge orchestration**: The brain issues work against declared capabilities rather than physical hostnames. Replacing, rebooting, or adding a machine requires zero adjustments to the model's instructions.
+- **Coordinated execution without drift**: Every node claims work against the same structured goal, constraints, and acceptance criteria, reporting verification back into a unified ledger.
+- **Fleet-wide observability**: A single call to `get_digest` returns a comprehensive view across every node, replacing narrow session-level guesses with verified system state.
 
 ![PAD's four layers](docs/preview/architecture.jpg)
 
 ## One brain can govern many kinds of work
 
-This is what PAD is actually good at.
+The usual multi-agent setup gives each kind of work its own agent. Nothing is shared, so a person ends up relaying between them by hand — carrying outputs, constraints and progress from one window to the next. The more workflows, the more relaying, until the relaying itself is the bottleneck.
 
-The usual approach gives every kind of work its own agent. They share no state, so you relay between them by hand — restating the previous step's output, constraints and progress for the next one. The more agents, the more relaying.
-
-PAD does not work that way. **The routing key is a capability — not a hostname, not an agent identity.**
+PAD keys routing on capability instead — not on a hostname, not on an agent's identity:
 
 ```
               hub: tasks / state / evidence / history
@@ -67,15 +62,13 @@ PAD does not work that way. **The routing key is a capability — not a hostname
    high concurrency    exclusive resource  long background
 ```
 
-One brain, the same nine tools, driving **completely different kinds of work at the same time**. It does not know who runs each one, on which machine, with which tool — it declares what it wants and PAD routes to whichever node declared that capability.
+One brain, the same nine MCP tools, driving very different workloads at once. It never learns which machine runs what or with which tool; it states the outcome, and PAD hands the task to a node that declared the capability.
 
-**That is what "many machines" really buys: not more concurrency, but more kinds of work one brain can govern, with one shared state.**
-
-The kinds stay isolated: a failure on one machine does not contaminate another's state, and one capability timing out does not drag the rest down.
+The gain is not concurrency. What changes is how many kinds of work one brain can govern, with the state still in a single place. Each task runs in the private environment of whichever node claimed it, so a broken toolchain or a timeout on one box never leaks into another's state.
 
 ## One hub, two ways to use it
 
-**Governed** and **autonomous** are two configurations of the same system.
+PAD supports two operational modes through the exact same system interface:
 
 | | Governed | Autonomous |
 |---|---|---|
@@ -84,21 +77,21 @@ The kinds stay isolated: a failure on one machine does not contaminate another's
 | Good for | clear results, strict acceptance | research, decomposition, multi-round work |
 | Cost to switch | one line of YAML | one line of YAML |
 
-**Both write the same table, pass the same acceptance gate, and appear in the same situation view.** Nothing downstream branches. Moving from governed to autonomous needs no migration and does not split the audit trail.
+Both modes write to the same task schema, pass through the same acceptance criteria validation, and populate the same digest. Switching between operator-governed execution and agent-driven autonomy requires no schema migration and preserves a continuous audit trail. Operators retain ultimate authority by explicitly declaring the envelope of available capabilities, retaining the ability to narrow or revoke autonomy at any point.
 
-That is what "the human keeps the vote" actually means: **not that the agent may never act on its own, but that the boundary of its autonomy is declared by you and revocable at any time.**
-
-Measured on one hub over two months in production:
+One hub, two months in production, three kinds of brain:
 
 | | Brain driven | Human command line | Scheduler |
 |---|---|---|---|
 | tasks | 854 | 39 | 36 |
 | evidence coverage | 96% | 47% | 100% |
 | median duration | 14.6 min | 0.7 min | 341 min |
+| machine-hours | 632.9 | 6.9 | 194.4 |
 | median goal length | 301 ch | 131 ch | 611 ch |
+| with acceptance criteria | 98% | 79% | 100% |
 | capabilities touched | 12 | 8 | 1 |
 
-Work handed to the brain is **specified** — long goals, acceptance criteria, spread across capabilities. Work a human sends directly is **directed** — short commands, under a minute. Both are legible on the same ledger.
+The three profiles separate cleanly. Work handed to the brain is specified: 301-character goals, 98% carrying acceptance criteria, spread over 12 capabilities. Work typed by hand is directed: 131 characters, median under a minute. The scheduler sits at the other extreme — one capability, the longest goals, a 47% failure rate, and nobody watching to notice its target has moved.
 
 ## What it solves
 
@@ -112,7 +105,7 @@ Work handed to the brain is **specified** — long goals, acceptance criteria, s
 
 ## How the three modes differ
 
-Personal Agent and Work Agent name two typical modes of working, not a strict taxonomy of products.
+Personal agents and work agents represent distinct interaction models rather than mutually exclusive product categories:
 
 | Dimension | Personal Agent | Work Agent | **PAD** |
 |---|---|---|---|
@@ -138,15 +131,15 @@ Feedback · task state and artifacts
   run records, results, problems, next round of adjustment
 ```
 
-**The load-bearing part is that second arrow.** A fully autonomous agent conflates "found something worth noticing" with "decided to act on it now": it sees a new thing, deploys it, patches it, adds features, and produces a pile nobody asked for. PAD separates the two — architecturally, not by a prompt asking it to check first.
+The load-bearing part is the line in the middle. A fully autonomous agent collapses "this looks worth doing" and "do it now" into one step: it spots something new, patches the code, adds a feature, ships it, and leaves behind a pile nobody asked for. PAD separates the two in the architecture itself, not with a prompt asking it to check first.
 
 ## Three more things
 
-**Tasks are durable objects, not one-shot conversations.** A typical Work Agent interaction is "state a task → execute → return → over". PAD takes the task out of the session: it starts on schedule and the hub manages state and results. What you see is a continuous stream of work, not a series of severed conversations.
+**Tasks are durable objects, not one exchange.** A normal agent interaction is state a task, run it, return, done — and the session closing takes it all with it. PAD takes the task out of the session: dispatch, progress, state transitions and the final result live in the hub. What you see is a continuous stream of work, not a heap of severed conversations.
 
-**Exploration and production need different standards.** Exploration wants broad coverage and real information gain; production wants bounded scope and a controllable result. Mixing them produces the familiar failure — a new idea appears mid-execution, rules and scope keep growing, and the actual objective drifts away. PAD gives them different entry points, node configurations and acceptance criteria.
+**Exploration and production need different rules.** Exploration wants reach and new information; production wants a bounded scope and a result you can rely on. Mix them and you get the familiar runaway — a fresh idea mid-run, more rules, more features, and the original goal drifting out of sight. PAD gives each its own entry point, node configuration and acceptance criteria.
 
-**The asset that accumulates is the working system.** An ordinary agent's capability comes from the model; change the model, reset the capability. PAD accumulates node assignments, task records, project experience, reusable ways of executing. The model is the engine; the system is the car.
+**What accumulates is the working system.** An ordinary agent's capability comes from the model, and changing the model resets it. What PAD builds up is how nodes divide the work, how tasks actually ran, where things broke, and which execution patterns are worth reusing. The model is the engine; the system is the car.
 
 ---
 
@@ -159,24 +152,24 @@ git clone https://github.com/Liam-magicbook/pad.git && cd pad
 ./quickstart.sh
 ```
 
-Under three minutes it will: create a virtualenv, install dependencies, generate a key, start the server, start a local node, dispatch a real task, and print the report.
+Under three minutes, the script creates a Python virtual environment, installs dependencies, generates an access key, launches the server, boots a local node daemon, executes an end-to-end task, and displays the resulting report.
 
 ![Quickstart](docs/preview/quickstart.jpg)
 
-You get an MCP URL at the end; paste it into ChatGPT and you are done. Stop with `./quickstart.sh --stop`.
+The script outputs an MCP endpoint URL ready to be configured in ChatGPT or Claude. Stop the background processes at any time with `./quickstart.sh --stop`.
 
-Requirements: Python 3.10+ and the ability to create a venv. No Docker, no database server.
+Requirements: Python 3.10+ with standard virtual environment tooling. No Docker daemon or external database service required.
 
 ### What you get
+
+The server exposes two distinct interfaces from a single process:
 
 ```
 /pad/<KEY>/mcp        for the brain (ChatGPT / Claude) — 9 task tools
 /pad/<KEY>/api/...    for each machine's node daemon — register / claim / report
 ```
 
-The model does not remember what it did yesterday, which machine is busy, or where a task is stuck. It cannot, and it should not. PAD keeps that in SQLite; the model asks one question — *what is the situation* — gets a summary, and continues.
-
-You say "produce a report", the model calls `get_digest` once and sees:
+Large language models cannot and should not retain fleet topology or task history in their prompt context. PAD maintains authoritative state in SQLite. When an operator requests an update, the model issues a single `get_digest` call to inspect the fleet:
 
 ```
 nodes:
@@ -189,7 +182,7 @@ active (2):
 done today: 7
 ```
 
-It then dispatches to `scrape.batch` because `vps-1` happens to be free — and it **never learned a machine name**.
+If the brain needs to schedule batch scraping, it submits a task targeting `scrape.batch`. Node `vps-1` claims the task automatically because it declared matching capability and has capacity — the model never needs to know the machine name.
 
 ![digest](docs/preview/digest.jpg)
 
@@ -197,11 +190,9 @@ It then dispatches to `scrape.batch` because `vps-1` happens to be free — and 
 
 # Technical detail
 
-Everything below is how it is built. If you only want to use it, the part above is enough.
-
 ## Connecting a brain
 
-MCP is the only external surface. The brain gets nine tools; there is no `run`, no `shell`, no `machine_id`:
+The MCP endpoint is PAD's sole external control interface. The brain accesses nine focused task tools, with no direct access to shells, filesystems, or host identifiers:
 
 ```
 get_digest(recent_limit=10)          fleet state: who is up, what is running, done today
@@ -216,10 +207,9 @@ get_artifact_delivery / observe      signed link and frame sampling (optional)
 
 ![MCP tool surface](docs/preview/mcp.jpg)
 
-**ChatGPT**: Settings → Connectors (Developer mode) → Create → MCP Server URL
-`http://<host>:8790/pad/<KEY>/mcp` → Scan tools → confirm the tools appear.
+**ChatGPT**: Navigate to Settings → Connectors (Developer mode) → Create. Set the MCP Server URL to `http://<host>:8790/pad/<KEY>/mcp`, trigger Scan tools, and verify that the nine tools appear. Enable PAD within a new conversation.
 
-**Claude Code / any MCP client**:
+**Claude Code / Standard MCP Clients**:
 
 ```json
 {
@@ -229,18 +219,11 @@ get_artifact_delivery / observe      signed link and frame sampling (optional)
 }
 ```
 
-Working on localhost does not mean it works from the internet. For phone or external access, see [Deploying](#deploying).
+Local loopback connectivity does not imply public reachability. To connect remote or cloud clients, see [Deploying](#deploying).
 
 ## One PAD, three brains
 
-This is the mechanism behind "the human keeps the vote."
-
-The word "agent" is used for two different things, and conflating them is why most personal-assistant products end up malformed.
-
-- **Work agent** — bounded authority. You state an outcome; it finishes inside a declared envelope.
-- **Personal agent** — standing authority. It decides what to do, when, and with which resources.
-
-The industry assumes these need two systems. PAD's answer: **this is only a question of which client occupies the brain slot, not an architectural question.** The slot is swappable, and the hub is indifferent.
+The role of the brain is swappable. Any client adhering to the MCP contract can drive work through the same centralized interface:
 
 | Who sits in the slot | Authority | Entry point |
 |---|---|---|
@@ -248,9 +231,9 @@ The industry assumes these need two systems. PAD's answer: **this is only a ques
 | You | Direct: you name a capability and a goal on the command line | `padctl submit`, `created_by=human` |
 | Scheduler | Periodic: submits the same pipeline every day | internal timer, `created_by=daily-auto-timer` |
 
-All three go through the **same** `submit_task`, write the **same** `tasks` table, pass the **same** acceptance gate, and appear in the **same** digest. Nothing downstream branches on `created_by`. **The brain is not a component, it is a role**, and any client satisfying the protocol can hold it.
+Every task submission invokes the same `submit_task` route, writes to the same `tasks` table, enforces the same acceptance gate, and appears in the same digest. Downstream execution does not branch on caller identity.
 
-Two months in production, the real distribution across three brains on one hub:
+Production data across 46 active days on a live deployment demonstrates how authority naturally distributes across brains:
 
 | | Chat model | You | Scheduler |
 |---|---|---|---|
@@ -264,38 +247,34 @@ Two months in production, the real distribution across three brains on one hub:
 | with acceptance criteria | 98% | 79% | 100% |
 | capabilities touched | 12 | 8 | 1 |
 
-**Three directions separate at once:**
+The measured workloads reflect distinct operational characteristics:
 
-- Work given to the model is **specified**: 301-character goals, 98% carrying criteria, spread over 12 capabilities.
-- Work you submit by hand is **directed**: 131-character goals, 79% with criteria, median under a minute, 6.9 machine-hours total across two months.
-- The scheduler is the other extreme: 1 capability, the longest goals, a **47% failure rate** — an unattended fixed pipeline with nobody to notice its target moved.
+- **Model-delegated tasks** are systematically specified: goals average 301 characters, 98% include explicit criteria, and execution spans 12 distinct capabilities with high evidence verification.
+- **Operator-submitted tasks** are concise and direct: goals average 131 characters with a median duration of 0.7 minutes, accumulating only 6.9 machine-hours across two months.
+- **Scheduled pipelines** execute static, repetitive goals with extensive durations (median 341 minutes) and a 47% failure rate, highlighting the brittleness of unattended routines when environmental targets shift.
 
-**Switching is free and needs no migration.** Of 46 active days, 10 contain tasks from both the chat model and you. Well-understood work whose result is one command, you send yourself; work needing research, decomposition, or a sequence of submissions goes to the model.
+Because switching requires zero operational overhead, 10 of the 46 active days feature interleaved submissions from both the chat model and human operators. Deterministic tasks execute via direct CLI invocation, while ambiguous problems requiring decomposition are delegated to the model.
 
-**Authority is a matter of degree, not two systems.** What separates a cautious work agent from a hands-off personal agent is not a sandbox and not a tool set — it is **how much of the envelope is fixed in advance**. A `padctl` interaction pins capability, goal and criteria, every field decided by a human. The chat model has the same nine tools and the same ceiling.
-
-**More autonomy is a YAML edit, not an architecture change.** Not a line of the hub changes; what changes is **which capabilities you declare**. That keeps the grant explicit and revocable instead of burying it in a prompt.
-
-**But autonomy has a cost.** The same mechanism that makes switching free makes over-delegation easy: a model holding a wide capability list will happily submit a goal no capability can satisfy, and the hub dutifully records a failure. About half the failure taxonomy is that shape. **Had routing authority been given to the model, this system could not have produced a failure taxonomy at all** — there would be no single place recording what went wrong.
+Extending or restricting autonomy does not alter the hub's architecture; it simply involves editing which capabilities are declared. Keeping authorization anchored to explicit capability registrations guarantees that permissions remain auditable and immediately revocable.
 
 ## Multi-machine coordination without a coordinator
 
-PAD is **centralized in state, decentralized in execution**, and that distinction is why many machines cooperate without a scheduler process.
+PAD couples centralized state management with decentralized task execution. This architectural separation enables reliable multi-machine coordination without running an active scheduler daemon.
 
-The hub has no queue worker and executes nothing. Each poll it answers two questions: **is there work matching capabilities I declared**, and **what is the state of the work I hold**. Every node polls on its own cadence and claims only when it has a free slot.
+The hub maintains no queue workers and runs no local task code. When node daemons poll the server, the hub answers two deterministic queries: matching pending tasks against declared capabilities, and updating active leases. Each node daemon polls independently and claims work only when local concurrency permits.
 
-**There is no assignment step at all.** Work is **claimed**, not dispatched. The hub's routing table is a set of declarations, not a set of decisions. Four properties follow:
+Tasks are **claimed** by nodes rather than dispatched by a central coordinator. This decentralized pull model yields four concrete operational benefits:
 
-- **No scheduler, no consensus.** Work is claimed from a table indexed by capability; the hub needs no global load view. Adding a machine is a registration; removing one is a timeout.
-- **Backpressure is automatic.** A node declaring `concurrency: N` will not claim the (N+1)-th. The queue grows in the database — the place where it is visible.
-- **Failure is local.** A node that dies mid-task leaves the task in `running` until the lease expires; reports are append-only and idempotent, so the next holder resumes from the ledger.
-- **The coordination record is the audit record.** Every claim, report and artifact is a row. The failure taxonomy needed no extra instrumentation.
+- **Zero scheduler complexity**: Task claims resolve against capability indexes in SQLite, removing the need for distributed consensus protocols or global load monitors. Registering a node requires a single HTTP request; unregistering occurs automatically on heartbeat timeout.
+- **Inherent backpressure**: A node configured with `concurrency: N` halts polling once N tasks are active. Surplus tasks wait transparently in SQLite where queue depth is globally observable.
+- **Contained node failures**: If a node crashes mid-execution, the task remains marked as `running` until its lease window elapses, allowing subsequent recovery from recorded checkpoints. Reports and artifacts remain append-only and idempotent.
+- **Unified audit trail**: Every claim transaction, execution log, intermediate artifact, and completion report is stored directly in database rows, eliminating separate tracing infrastructure.
 
-The cost is real and stated up front: one hub is a single point of coordination, and a restart drops process supervision for in-flight tasks. For one operator with a few machines that trade is obviously correct; for multi-tenant it is not, and PAD makes no claim there.
+For small to medium fleets operated by a single team, trading distributed scheduling complexity for a single SQLite-backed hub provides high operational stability with minimal maintenance overhead.
 
 ## Adding a machine
 
-One machine = one node = one YAML. **No PAD code changes.**
+Each node requires only a configuration file and a lightweight daemon process. Incorporating a machine requires zero code changes to the PAD hub:
 
 ```bash
 # on the new machine
@@ -312,11 +291,11 @@ vi ld_config.yaml                 # node_id / capabilities / pad_url
 .venv/bin/python ld_agent.py ld_config.yaml
 ```
 
-The `agent.bundle.tgz` you pull is the **current** node daemon and prompts from the server. No cloning, and no "this box is running logic from three months ago". When the server's skeleton changes, nodes report a fingerprint mismatch at registration and one command re-pulls it (leaving your `ld_config.yaml` alone).
-
-The full join protocol, self-check list and known traps are in [JOIN.md](JOIN.md).
+Fetching `agent.bundle.tgz` delivers the exact daemon runtime and prompt templates currently running on the server, preventing version drift across machines. If the server runtime updates, node daemons flag the fingerprint mismatch upon registration and can re-fetch the bundle without overwriting local configurations. Detailed onboarding steps, self-checks, and operational guidelines are documented in [JOIN.md](JOIN.md).
 
 ### Two ways to declare a capability
+
+Node capabilities support both deterministic scripts and autonomous agent runtimes:
 
 ```yaml
 capabilities:
@@ -335,48 +314,44 @@ capabilities:
     concurrency: 2
 ```
 
-`run_harness.py` translates a task into one CLI's invocation — **switching executor is one argument**: `opencode` / `claude` / `codex`. PAD does not know which model you run; it sends "what should happen", and each node adapts, so machines can differ.
+`run_harness.py` adapts task descriptions into headless CLI invocations across different agent runtimes, allowing operators to switch backends (`opencode`, `claude`, or `codex`) via a single command argument. PAD dispatches requirements without coupling to specific model providers, enabling heterogeneous environments across machines.
 
-Either way, the contract is the same: done or failed, the node writes `$PAD_WORK_DIR/result.json` with `done`/`failed`, a prose report, and per-criterion evidence. **No `result.json` means not done**, even with exit code 0.
+Regardless of execution method, all tasks conform to the same completion protocol: the worker writes a structured `$PAD_WORK_DIR/result.json` specifying `done` or `failed`, an explanatory narrative, and per-criterion verification evidence. In the absence of `result.json`, the task is marked as failed regardless of a zero process exit code.
 
 ### Ask this before adding a capability
 
-> If two machines did this at the same time, would they collide?
+Before declaring a capability across multiple nodes, evaluate resource contention:
+
+> If two machines execute this task concurrently, will they collide?
 
 | Answer | What to do |
 |---|---|
 | **Yes** (shared login state, same output file, same resource) | **Only one** may declare it |
 | **No** (scraping, tests, pure reads) | Declare the **same name** on many nodes — that is horizontal scale |
 
-Never rename a conflicting capability to dodge the rule. The hub would treat it as a different job and dispatch one to each.
+Never rename conflicting capabilities simply to bypass contention limits. The hub treats distinct capability keys as independent queues, resulting in conflicting parallel dispatches.
 
 ## Design principles: what failure each choice prevents
 
-Mechanisms are in section 3 of the paper; this is the **why**.
+Mechanisms and formal models are detailed in Section 3 of the paper; these principles govern system design choices:
 
-**State must outlive the process that produced it.** Two processes always die: the context window and the executor. The mainstream response is to enlarge the first — longer transcripts, summaries, retrieval — treating the context window as storage. It is not storage: no eviction policy, no schema, no query language, no sharing, no audit trail, and it is most likely to be truncated exactly when the task gets long. We place every durable fact at the layer with the longest mean time to failure: one process, one SQLite file, append-only.
-
-**The interface must be narrower than the capability.** Harnesses grow by adding tools, each locally reasonable and globally expensive. Nine is not a budget picked for elegance; it is the set that survives "does the brain need this, or does the executor already have it?". Everything that acts on the world — shell, filesystem, browser, network, credentials — belongs to the executor. The brain gets operations on **work** only.
-
-**Route on what, never where.** Once a dispatch names a host, three things become true at once: the dispatcher must know the fleet, the fleet cannot change, and the audit trail records a machine rather than an intent.
-
-**The edge knows its environment better than the center.** A dispatch that specifies steps claims the dispatcher knows the execution environment. That claim is usually false: whether a CLI needs `--skip-git-repo-check`, whether the repo is clean, whether a cookie expired, whether the disk has room — all visible only at the edge.
-
-**Evidence is an artifact, not an assertion.** An exit code is fine when the command and the goal are the same thing, and useless for "produce a verified summary". The system that ran the command is also the least able to judge whether the goal was met.
-
-**Failure is a first-class outcome.** In most harnesses failure is an exception. In long-horizon work that shape is wrong — a four-hour run that discovers the goal cannot be met as stated has produced a finding, and discarding it as an error discards the finding.
-
-**What we deliberately did not build** (full reasoning in appendix A of the paper): no planner in the hub; no message bus or vector store; no mid-task dialogue; no multi-tenancy; no model in the routing path.
+- **State must outlive the process that produced it.** Both context windows and executor processes eventually terminate. Treating context windows as permanent storage introduces truncation errors without providing indexing, schema validation, or multi-node access. Durable facts reside in an append-only SQLite database backed by a single persistent server process.
+- **The interface must be narrower than the capability.** Expanding tool interfaces inflates prompt overhead and increases combinatorial failure modes. PAD restricts the brain to nine task management primitives, delegating all environment actions—shells, filesystem modifications, browsers, and network calls—to node-level executors.
+- **Route on what, never where.** Specifying target hosts couples dispatchers to fleet topology, breaks dynamic scaling, and pollutes audit ledgers with transient machine names instead of intent.
+- **The edge knows its environment better than the center.** Centralized dispatchers lack direct visibility into local execution details, including repository cleanliness, package manager paths, authentication cookies, and available storage. Tasks declare target goals and constraints, leaving execution planning to the node.
+- **Evidence is an artifact, not an assertion.** Process return codes fail to convey whether semantic goals were satisfied. Completed tasks must present concrete, verifiable artifacts mapped against every declared acceptance criterion.
+- **Failure is a first-class outcome.** Long-running executions that uncover unachievable constraints produce valuable findings. Dropping failed runs as exceptions discards analytical insights; failures are recorded alongside structured evidence.
+- **Deliberate non-goals**: PAD intentionally excludes central automated planners, message brokers, vector databases, interactive mid-task chat loops, multi-tenant partitioning, and language models in the core routing path.
 
 ## Deploying
 
-Localhost is not enough for a phone, another network, or ChatGPT's cloud. Three layers:
+Exposing the server beyond local loopback requires TLS termination and reverse proxying:
 
 ```
 internet → reverse proxy (nginx/caddy, TLS) → 127.0.0.1:8790 (uvicorn)
 ```
 
-The things that bite (each cost us a debugging session):
+Key operational considerations when configuring the proxy:
 
 | Item | Note |
 |---|---|
@@ -384,6 +359,8 @@ The things that bite (each cost us a debugging session):
 | **`PAD_KEY`** | This *is* the auth. It sits in the URL, so treat it as a long-lived revocable secret. Do not paste it in public |
 | **Proxy body limit** | Defaults are small; tasks with files 413. Set `client_max_body_size 32m` on the `/pad/` location |
 | **Do not restart the server** | `systemctl restart pad` kills in-flight task process groups. Restart in a quiet window |
+
+Production startup script:
 
 ```bash
 # server
@@ -393,19 +370,18 @@ PAD_ALLOWED_HOSTS=pad.example.com,localhost,127.0.0.1 \
 .venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8790
 ```
 
-systemd units are in `deploy/pad.service` and `deploy/pad-node.service` (Linux), plus `deploy/com.pad.ld.plist` (macOS).
+Service definitions are provided in `deploy/pad.service` and `deploy/pad-node.service` for systemd, and `deploy/com.pad.ld.plist` for launchd on macOS.
 
 ## Dispatching files with a task
 
-The model must not stuff megabytes of base64 into its context. Two paths:
+Tasks frequently require reference assets without exhausting prompt context windows. PAD supports two file intake pathways:
 
-**1. `files` (ChatGPT attachments)** — the user attaches a file; ChatGPT converts it via `_meta["openai/fileParams"]` into `{download_url, file_id, mime_type, file_name}`, and the server fetches the bytes **within that call**. The model never touches the content.
+1. **`files` (ChatGPT attachment handling)**: Users upload attachments directly in chat. ChatGPT forwards download descriptors via `_meta["openai/fileParams"]` containing `{download_url, file_id, mime_type, file_name}`. PAD streams the payload directly to disk within the active tool call, preventing raw bytes from entering model context.
+2. **`input_files` (Direct byte payloads)**: Automated callers supply file payloads formatted as `{name, mime_type, data_base64}`.
 
-**2. `input_files`** — when the caller already has bytes: `{name, mime_type, data_base64}`.
+Both channels enforce uniform constraints: at most 8 files per task, at most 10 MiB per file, and an aggregate payload cap of 15 MiB. Uploaded files land in the node's local `inputs/` directory alongside an authoritative `manifest.json` containing SHA-256 digests. Supported formats include images, PDF documents, Office spreadsheets, CSV/JSON data, tar/zip archives, audio, video, and subtitle tracks.
 
-Both share one validation path (8 files per task, ≤10 MiB each, ≤15 MiB total). The node sees the original files plus `manifest.json` with sha256 in `inputs/`. Any type: images, PDF, Office, CSV/JSON/Markdown, archives, audio, video, subtitles.
-
-Without hand-rolling base64:
+Using the command line client:
 
 ```bash
 ./padctl.py submit --capability build.heavy --goal "rework the plan per this report" \
@@ -414,7 +390,7 @@ Without hand-rolling base64:
 ./padctl.py input  t-20261102-xxxxxx --out .  # download and verify
 ```
 
-**`download_url` is valid only during that call**, so bytes must be fetched synchronously. The path is treated as SSRF: https only, DNS resolution rejects private/loopback/reserved ranges, **every redirect hop is re-validated**, and reads are counted against the size limit.
+Because attachment `download_url` tokens are short-lived, PAD ingests files synchronously. Download requests are hardened against SSRF: connections require HTTPS, IP targets are resolved and checked to block private, loopback, and reserved ranges, and redirections are re-evaluated at every hop with strict size accounting.
 
 ## Repository layout
 
@@ -439,12 +415,14 @@ Without hand-rolling base64:
 
 ## Development
 
+Run local test suites:
+
 ```bash
 .venv/bin/python -m unittest discover -s tests -v   # unit tests
 bash tests/e2e_input_files.sh                       # end-to-end: temp server + node, real path
 ```
 
-The demo images are not hand-assembled; they capture this machine's real output and then screenshot it. Rerun after changing output format:
+Preview graphics are generated directly from live system executions rather than synthetic mockups. Re-render previews when altering output styling:
 
 ```bash
 ./quickstart.sh          # a local PAD must be running
@@ -453,9 +431,9 @@ The demo images are not hand-assembled; they capture this machine's real output 
 
 ## Paper
 
-`paper/pad.pdf` (ICML Template, 8 pages of body + 5 of appendix) turns the above into a citable system report: problem definition, relation to harness / long-horizon / delegation work, architecture, design principles, and measurements. The appendix expands the database schema, the task state machine, each of the nine tool contracts, and the reproduction scripts.
+A comprehensive systems report is available in `paper/pad.pdf` (typeset in the ICML Template, comprising 8 pages of body text and 5 pages of appendices). The paper details problem formalization, analyzes relationships with modern harness architectures, long-horizon agents, and delegation frameworks, and documents design trade-offs alongside empirical evaluations. Appendices include the full SQLite schema, task state machine definitions, specifications for all nine tool endpoints, and reproduction workflows.
 
-The measurements come from two months of real logs on this system in production:
+Empirical evaluations stem from two months of production logs on live infrastructure:
 
 | Metric | Value |
 |---|---|
@@ -466,17 +444,17 @@ The measurements come from two months of real logs on this system in production:
 | Failed tasks still delivering a structured report | 42% |
 | Dominant failure cause | 64/132 are executor-environment faults (not the model failing) |
 
-That last line is what the whole design is arguing: **most failures happen in the environment, not in the reasoning.** A single-loop harness sees "the tool call broke"; PAD sees "this capability on this machine is broken", and the second one is fixable.
+The empirical findings reinforce a central design thesis: **the majority of long-horizon agent failures arise from execution environment faults rather than model reasoning breakdowns.** Single-loop harnesses typically register these issues as generic tool call errors. PAD's decoupled architecture surfaces the precise failure mode at the capability and machine level, allowing targeted environmental remediation.
 
-Data and reproduction scripts: `paper/data/aggregates.json` and `tools/collect_stats.py`. The raw dump contains real operator goals and is not in the repository.
+Aggregated data and reproduction scripts reside in `paper/data/aggregates.json` and `tools/collect_stats.py`. Raw execution logs contain sensitive operational context and are excluded from the repository.
 
 ## Known gaps
 
-- Auth is a URL key, no OAuth. Swapping in OAuth means changing the layer in front of the proxy; the contract stays
-- A task that crashes mid-`running` (no terminal report) is not auto-adopted; it needs a stale reaper
-- The 10 MiB per-file limit comes from buffering in server memory; hundreds of MB would need chunked writes
-- Non-image inputs are not parsed inside PAD (no PDF text extraction, no Office conversion); the node's executor reads them with local tools
-- ChatGPT Business/Enterprise workspace publishing is not implemented; only personal developer mode
+- Authentication relies on pre-shared URL tokens without OAuth support. Introducing OAuth requires inserting an authentication layer at the reverse proxy boundary without altering core protocols.
+- Tasks that terminate unexpectedly during execution without delivering terminal reports require external lease sweeping to trigger automated reassignment.
+- The 10 MiB individual file size limit stems from buffering payloads in server memory; handling larger files requires implementing chunked disk streaming.
+- Structured file parsing (such as PDF text extraction or document conversion) is omitted within the PAD hub, leaving interpretation to node-local tools.
+- Remote integration currently focuses on personal developer mode; enterprise workspace publishing paths are not implemented.
 
 ---
 
